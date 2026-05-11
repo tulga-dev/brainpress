@@ -80,6 +80,8 @@ import {
 const tabs = ["Overview", "Memory", "Outcomes", "Prompts", "Agent Runs", "Build Logs", "Settings"] as const;
 type Tab = (typeof tabs)[number];
 type MemoryImportMode = "Paste text" | "Upload PDF";
+const rawSourcePreviewLimit = 1_000;
+const rawSourceExpandedDisplayLimit = 20_000;
 
 const outcomeStatuses: OutcomeStatus[] = [
   "Draft",
@@ -1581,9 +1583,21 @@ function PdfImportReview({
           <ImportMetaLine label="Pages" value={source.pageCount ? String(source.pageCount) : "n/a"} />
         </div>
 
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+          Brainpress extracted the {source.sourceType === "PDF" ? "PDF" : "source"} and converted it into structured project memory.
+          Review the analysis below before saving.
+        </div>
+
         <div className="mb-4 rounded-lg border border-line bg-white p-4">
-          <p className="mb-2 text-sm font-medium text-ink">Analysis summary</p>
-          <p className="text-sm leading-6 text-slateText">{analysis.analysisSummary}</p>
+          <p className="mb-3 text-sm font-medium text-ink">Analysis Summary</p>
+          <ul className="space-y-2 text-sm leading-6 text-slateText">
+            {(analysis.analysisBullets.length ? analysis.analysisBullets : [analysis.analysisSummary]).map((item) => (
+              <li key={item} className="flex gap-2">
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-electric" />
+                <span>{item.replace(/^[-*]\s*/, "")}</span>
+              </li>
+            ))}
+          </ul>
           {analysis.detectedThemes.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {analysis.detectedThemes.map((theme) => (
@@ -1595,18 +1609,16 @@ function PdfImportReview({
           ) : null}
         </div>
 
-        <details className="mb-4 rounded-lg border border-line bg-white p-4">
-          <summary className="cursor-pointer text-sm font-medium text-ink">Extracted text preview</summary>
-          <MonoBlock className="mt-3 max-h-80" value={analysis.previewText} />
-        </details>
-
         <div className="mb-4 grid gap-3 md:grid-cols-2">
-          <ImportSection title="Product Summary" value={analysis.memory.productSummary} />
-          <ImportSection title="Technical Architecture" value={linesToText(analysis.detected.technicalSignals)} />
-          <ImportSection title="Active Decisions" value={linesToText(analysis.detected.decisions)} />
-          <ImportSection title="Completed Work" value={linesToText(analysis.detected.completedWork)} />
-          <ImportSection title="Known Issues" value={linesToText(analysis.detected.knownIssues)} />
-          <ImportSection title="Roadmap" value={linesToText(analysis.detected.roadmap)} />
+          <ImportSection title="Product Summary" value={analysis.memorySections.productSummary} />
+          <ImportSection title="Key Facts" value={analysis.keyFacts} />
+          <ImportSection title="Current Build State" value={analysis.memorySections.currentBuildState} />
+          <ImportSection title="Technical Architecture" value={analysis.memorySections.technicalArchitecture} />
+          <ImportSection title="Active Decisions" value={analysis.memorySections.activeDecisions} />
+          <ImportSection title="Completed Work" value={analysis.memorySections.completedWork} />
+          <ImportSection title="Known Issues" value={analysis.memorySections.knownIssues} />
+          <ImportSection title="Open Questions" value={analysis.memorySections.openQuestions} />
+          <ImportSection title="Roadmap / Next Steps" value={analysis.memorySections.roadmap} />
         </div>
 
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
@@ -1663,18 +1675,79 @@ function PdfImportReview({
             <p className="text-sm text-slate-500">No suggested outcomes found yet.</p>
           )}
         </div>
+
+        <RawSourceText className="mt-4" source={source} previewText={analysis.previewText} />
       </PanelBody>
     </Panel>
   );
 }
 
-function ImportSection({ title, value }: { title: string; value: string }) {
+function ImportSection({ title, value }: { title: string; value: string | string[] }) {
+  const content = Array.isArray(value) ? linesToText(value) : value;
+
   return (
     <div className="rounded-lg border border-line bg-white p-4">
       <p className="mb-2 font-mono text-xs font-semibold uppercase text-electric">{title}</p>
-      <p className="whitespace-pre-wrap text-sm leading-6 text-slateText">{value || "No strong signal detected."}</p>
+      <p className="whitespace-pre-wrap text-sm leading-6 text-slateText">{content || "No strong signal detected."}</p>
     </div>
   );
+}
+
+function RawSourceText({
+  source,
+  previewText = sourceTextPreview(source.extractedText),
+  className,
+}: {
+  source: ProjectImport;
+  previewText?: string;
+  className?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = source.extractedText.length > previewText.length;
+  const isDisplayCapped = expanded && source.extractedText.length > rawSourceExpandedDisplayLimit;
+  const displayText = expanded ? sourceTextExpandedPreview(source.extractedText) : previewText;
+
+  return (
+    <div className={cx("rounded-lg border border-line bg-white p-4", className)}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="font-medium text-ink">
+            {source.sourceType === "PDF" ? "Raw extracted PDF text" : "Raw imported source text"}
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slateText">
+            This is the raw extracted source. Brainpress uses it to generate memory, but you usually do not need to edit it.
+          </p>
+        </div>
+        <Button onClick={() => setExpanded((value) => !value)}>
+          <Eye className="h-4 w-4" />
+          {expanded ? "Collapse text" : source.extractedText.length > rawSourceExpandedDisplayLimit ? "Expand safe preview" : "Expand full text"}
+        </Button>
+      </div>
+      {isLong ? (
+        <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+          Large source detected. Brainpress summarized it into memory sections. Raw text is kept as source.
+        </div>
+      ) : null}
+      {isDisplayCapped ? (
+        <div className="mb-3 rounded-md border border-line bg-mist px-3 py-2 text-sm leading-6 text-slateText">
+          Browser display is capped for performance. The full raw source remains stored in this import.
+        </div>
+      ) : null}
+      <MonoBlock className="max-h-80" value={displayText} />
+    </div>
+  );
+}
+
+function sourceTextPreview(value: string) {
+  const preview = value.slice(0, rawSourcePreviewLimit);
+  return value.length > preview.length ? `${preview}\n\n[Preview truncated. Full extracted text is stored in the source.]` : preview;
+}
+
+function sourceTextExpandedPreview(value: string) {
+  const preview = value.slice(0, rawSourceExpandedDisplayLimit);
+  return value.length > preview.length
+    ? `${preview}\n\n[Display truncated for browser performance. Full raw source remains stored in this import.]`
+    : preview;
 }
 
 function ImportMetaLine({ label, value }: { label: string; value: string }) {
@@ -1736,7 +1809,7 @@ function ImportsPanel({
                   </div>
                 ) : null}
                 {viewingImport?.id === source.id ? (
-                  <MonoBlock className="mt-3 max-h-80" value={source.extractedText} />
+                  <RawSourceText className="mt-3" source={source} />
                 ) : null}
               </div>
             ))}

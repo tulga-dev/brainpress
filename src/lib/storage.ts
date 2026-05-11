@@ -123,6 +123,17 @@ function normalizeBuildLog(log: BuildLog): BuildLog {
 }
 
 function normalizeProjectImport(source: ProjectImport): ProjectImport {
+  const memorySections = source.memorySections || {
+    productSummary: "",
+    currentBuildState: "",
+    technicalArchitecture: [],
+    activeDecisions: [],
+    completedWork: [],
+    knownIssues: [],
+    openQuestions: [],
+    roadmap: [],
+  };
+
   return {
     ...source,
     sourceType: source.sourceType || "TextPaste",
@@ -131,6 +142,18 @@ function normalizeProjectImport(source: ProjectImport): ProjectImport {
     extractedPages: source.extractedPages || [],
     detectedThemes: source.detectedThemes || [],
     analysisSummary: source.analysisSummary || "Imported source saved without analysis summary.",
+    analysisBullets: source.analysisBullets || [],
+    keyFacts: source.keyFacts || [],
+    memorySections: {
+      productSummary: memorySections.productSummary || "",
+      currentBuildState: memorySections.currentBuildState || "",
+      technicalArchitecture: memorySections.technicalArchitecture || [],
+      activeDecisions: memorySections.activeDecisions || [],
+      completedWork: memorySections.completedWork || [],
+      knownIssues: memorySections.knownIssues || [],
+      openQuestions: memorySections.openQuestions || [],
+      roadmap: memorySections.roadmap || [],
+    },
     suggestedOutcomes: source.suggestedOutcomes || [],
   };
 }

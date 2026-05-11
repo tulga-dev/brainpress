@@ -38,6 +38,9 @@ Scanned/image-only PDFs are not supported yet.
 - `extractedPages`: `{ pageNumber, text }[]`
 - `detectedThemes`
 - `analysisSummary`
+- `analysisBullets`
+- `keyFacts`
+- `memorySections`
 - `suggestedOutcomes`
 - `createdAt`
 
@@ -69,18 +72,16 @@ PDF text is passed through the project history analyzer. It reuses the existing 
 - issue extraction from `issue`, `bug`, `problem`, `broken`, `missing`, `risk`
 - roadmap extraction from `next`, `todo`, `need to`, `build`, `add`, `future`, `roadmap`
 - architecture extraction from `Next.js`, `TypeScript`, `Supabase`, `Postgres`, `API`, `schema`, `component`, `route`, `database`, `model`, `integration`, `Codex`, `agent`
+- key fact extraction from routes, repo paths, file paths, commands, build results, Git/Vercel settings, decisions, warnings, and next steps
+- concise section caps so long PDFs do not become copy-paste memory blocks
 
 ## Review UX
 
 After extraction, Brainpress shows a review screen:
 
-- source title
-- file name
-- page count
-- extracted text preview
-- extracted memory sections
-- detected themes
-- suggested outcomes
+- Analysis Summary: 5-8 bullets, source file name, page count, and detected theme chips
+- Structured Memory Review: Product Summary, Key Facts, Current Build State, Technical Architecture, Active Decisions, Completed Work, Known Issues, Open Questions, Roadmap, and Suggested Outcomes
+- Raw Source Text: collapsed by default, with a short preview and an expand button
 
 The user can:
 
@@ -96,11 +97,14 @@ Saving to memory appends, it does not blindly replace:
 - Active Decisions: append detected decisions
 - Completed Work: append detected completed work
 - Known Issues: append detected issues
+- Open Questions: append detected questions and unresolved decisions
 - Roadmap: append detected roadmap/next-task lines
 - Technical Architecture: append detected architecture lines
 - Product Summary: update only if empty, unless the user explicitly chooses `Save + Update Summary`
 
 Simple deduplication removes repeated imported lines.
+
+The raw extracted text remains in `ProjectImport.extractedText` and can be viewed from the source history. It is not pasted into the main import textarea and is not saved directly into memory cards.
 
 ## Suggested Outcomes
 

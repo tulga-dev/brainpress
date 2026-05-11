@@ -15,7 +15,7 @@ Project Memory -> Outcome -> Agent Prompt -> Agent Result -> Build Log -> Next O
 - Agent result ingestion into structured build logs.
 - Project settings for repo path, preferred agent, constraints, and verification commands.
 - Founder-safe Permission Safety Rules included in every generated prompt and handoff package.
-- PDF Intake for Project Memory: upload text-based PDFs, extract page text, review memory sections, save sources, and create suggested outcomes.
+- PDF Intake for Project Memory: upload text-based PDFs, extract page text, review concise analyzed memory sections, keep raw source collapsed, save sources, and create suggested outcomes.
 
 ## Founder-Safe Permissions
 
@@ -132,13 +132,13 @@ Supported PDFs are text-based PDFs such as ChatGPT exports, product specs, resea
 
 PDF analysis produces a review screen with:
 
-- source title, file name, page count, and extracted text preview
-- extracted Product Summary, Technical Architecture, Active Decisions, Completed Work, Known Issues, and Roadmap signals
-- detected themes
+- an Analysis Summary card with 5-8 bullets, source file name, page count, and detected theme chips
+- structured memory cards for Product Summary, Key Facts, Current Build State, Technical Architecture, Active Decisions, Completed Work, Known Issues, Open Questions, Roadmap, and Suggested Outcomes
+- raw extracted PDF text collapsed by default with only a short preview
 - 3-5 suggested outcomes
 - options to Save to Memory, Save as Source Only, Generate Outcome from PDF, or Discard
 
-Saving to Memory merges into existing memory with deduplication. Decisions, completed work, issues, roadmap, and architecture are appended. Product Summary is only updated when it is empty, unless the user explicitly chooses to update it.
+Saving to Memory merges structured analysis into existing memory with deduplication. Decisions, completed work, issues, open questions, roadmap, and architecture are appended. Product Summary is only updated when it is empty, unless the user explicitly chooses to update it. The full raw extracted text remains stored as source history, but it is not pasted into the main import textarea or memory cards.
 
 Scanned/image-only PDFs are not supported yet. If text extraction fails, Brainpress tells the user to export as text or upload a text-based PDF. OCR is a future phase.
 

@@ -44,7 +44,8 @@ import {
 } from "../src/lib/run-events";
 import { defaultPermissionSafetyRules } from "../src/lib/safety";
 import { cancelActiveCodexRun, emptyRunLogs, getRunLogPaths, validateRunLogPath } from "../src/lib/server-run-logs";
-import { seedMemory, seedOutcome, seedProject } from "../src/lib/seed";
+import { initialState, seedMemory, seedOutcome, seedProject } from "../src/lib/seed";
+import { loadBrainpressState } from "../src/lib/storage";
 import { validateVerificationCommands } from "../src/lib/verification";
 
 test("heuristic parser organizes decisions, completed work, issues, and roadmap", () => {
@@ -469,6 +470,8 @@ test("PDF import model creation stores source metadata and pages", () => {
   assert.equal(source.fileName, "memo.pdf");
   assert.equal(source.pageCount, 2);
   assert.equal(source.extractedPages[1].pageNumber, 2);
+  assert.deepEqual(source.keyFacts, []);
+  assert.equal(source.memorySections.productSummary, "");
 });
 
 test("project history parser handles long noisy text", () => {
@@ -514,6 +517,154 @@ test("project history parser extracts decisions, work, issues, roadmap, and arch
   assert.match(analysis.detected.knownIssues.join("\n"), /empty state/i);
   assert.match(analysis.detected.roadmap.join("\n"), /proactive agent/i);
   assert.match(analysis.detected.technicalSignals.join("\n"), /Supabase integration/i);
+  assert.match(analysis.memorySections.technicalArchitecture.join("\n"), /Supabase integration/i);
+  assert.ok(analysis.keyFacts.length > 0);
+  assert.ok(analysis.analysisBullets.length >= 5);
+});
+
+test("PDF history analysis preserves raw text but keeps visible memory concise", () => {
+  const rawLongSource = [
+    "Decision: The app must keep Brainpress PDF Intake focused on project memory.",
+    "src/app/page.tsx exists and npm run build passed.",
+    "Known issue: Vercel still shows 404 because the wrong folder may be deployed.",
+    "Next add a clean PDF review that hides raw extracted text by default.",
+    "Technical architecture: Next.js App Router, TypeScript, Tailwind, localStorage.",
+    ...Array.from({ length: 180 }, (_, index) => `Repeated transcript filler ${index}: this paragraph is useful as raw source but should not become a memory card.`),
+  ].join("\n");
+
+  const analysis = analyzeProjectHistory(rawLongSource, {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Long PDF",
+    fileName: "long.pdf",
+    pageCount: 12,
+  });
+
+  assert.ok(analysis.source.extractedText.includes("Repeated transcript filler 179"));
+  assert.ok(analysis.previewText.length < analysis.source.extractedText.length);
+  assert.ok(analysis.previewText.length <= 1_100);
+  assert.ok(analysis.analysisBullets.length >= 5);
+  assert.match(analysis.analysisSummary, /Source analyzed/i);
+  assert.ok(analysis.keyFacts.some((fact) => /src\/app\/page\.tsx|npm run build/i.test(fact)));
+  assert.ok(analysis.memorySections.activeDecisions.length <= 10);
+  assert.ok(analysis.memorySections.knownIssues.length <= 10);
+  assert.ok(analysis.memorySections.roadmap.length <= 10);
+  assert.ok(
+    [
+      ...analysis.memorySections.activeDecisions,
+      ...analysis.memorySections.knownIssues,
+      ...analysis.memorySections.roadmap,
+      ...analysis.memorySections.technicalArchitecture,
+    ].every((line) => line.length <= 193),
+  );
+});
+
+test("one-line PDF extraction keeps late file paths, commands, decisions, errors, and next steps", () => {
+  const filler = "background project transcript ".repeat(80);
+  const oneLinePdfText = [
+    filler,
+    "Decision: must keep src/app/autobiography/page.tsx available in production.",
+    filler,
+    "Error: npm run build failed while checking src/lib/actions.ts.",
+    filler,
+    "Next run git status --short and add the missing admin/document-intake route.",
+  ].join(" ");
+
+  const analysis = analyzeProjectHistory(oneLinePdfText, {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "One-line export",
+    fileName: "one-line.pdf",
+    pageCount: 1,
+  });
+
+  assert.match(analysis.memorySections.activeDecisions.join("\n"), /src\/app\/autobiography\/page\.tsx/i);
+  assert.match(analysis.memorySections.knownIssues.join("\n"), /npm run build failed/i);
+  assert.match(analysis.memorySections.roadmap.join("\n"), /git status --short|admin\/document-intake/i);
+  assert.ok(analysis.keyFacts.some((fact) => /src\/lib\/actions\.ts|src\/app\/autobiography\/page\.tsx/i.test(fact)));
+});
+
+test("long PDF memory sections are capped instead of showing raw extracted blocks", () => {
+  const text = Array.from({ length: 30 }, (_, index) =>
+    [
+      `Decision: must keep owner-grade workflow ${index}.`,
+      `Issue: missing polished state ${index}.`,
+      `Next build verification-ready outcome ${index}.`,
+      `Technical architecture: src/app/feature-${index}/page.tsx route uses TypeScript components.`,
+    ].join("\n"),
+  ).join("\n");
+  const analysis = analyzeProjectHistory(text, {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Large spec",
+    fileName: "large-spec.pdf",
+    pageCount: 24,
+  });
+
+  assert.equal(analysis.memorySections.activeDecisions.length, 10);
+  assert.equal(analysis.memorySections.knownIssues.length, 10);
+  assert.equal(analysis.memorySections.roadmap.length, 10);
+  assert.equal(analysis.memorySections.technicalArchitecture.length, 10);
+  assert.ok(analysis.suggestedOutcomes.length >= 3);
+});
+
+test("legacy raw imports load with fallback project-memory analysis fields", () => {
+  const previousWindow = Reflect.get(globalThis, "window");
+  const store = new Map<string, string>();
+  const fakeWindow = {
+    localStorage: {
+      getItem: (key: string) => store.get(key) || null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    },
+  };
+  const rawText = "Page 1\nDecision: preserve raw source text.\nNext add cleaner PDF review.";
+
+  Reflect.set(globalThis, "window", fakeWindow);
+  try {
+    store.set(
+      "brainpress.mvp.state.v1",
+      JSON.stringify({
+        ...initialState,
+        imports: [
+          {
+            id: "legacy_import",
+            projectId: seedProject.id,
+            sourceType: "PDF",
+            title: "Legacy PDF",
+            fileName: "legacy.pdf",
+            pageCount: 1,
+            extractedText: rawText,
+            extractedPages: [{ pageNumber: 1, text: rawText }],
+            detectedThemes: ["route"],
+            analysisSummary: "Legacy summary",
+            suggestedOutcomes: [],
+            createdAt: "2026-05-11T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const state = loadBrainpressState();
+    const source = state.imports[0];
+
+    assert.equal(source.id, "legacy_import");
+    assert.equal(source.extractedText, rawText);
+    assert.deepEqual(source.analysisBullets, []);
+    assert.deepEqual(source.keyFacts, []);
+    assert.deepEqual(source.memorySections.activeDecisions, []);
+    assert.equal(source.memorySections.productSummary, "");
+  } finally {
+    if (typeof previousWindow === "undefined") {
+      Reflect.deleteProperty(globalThis, "window");
+    } else {
+      Reflect.set(globalThis, "window", previousWindow);
+    }
+  }
 });
 
 test("memory merge appends imported sections without replacing existing summary by default", () => {

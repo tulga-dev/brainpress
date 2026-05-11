@@ -187,6 +187,17 @@ export interface SuggestedOutcome {
   verificationCommands: string[];
 }
 
+export interface ProjectImportMemorySections {
+  productSummary: string;
+  currentBuildState: string;
+  technicalArchitecture: string[];
+  activeDecisions: string[];
+  completedWork: string[];
+  knownIssues: string[];
+  openQuestions: string[];
+  roadmap: string[];
+}
+
 export interface ProjectImport {
   id: string;
   projectId: string;
@@ -199,6 +210,9 @@ export interface ProjectImport {
   extractedPages: ExtractedPage[];
   detectedThemes: string[];
   analysisSummary: string;
+  analysisBullets: string[];
+  keyFacts: string[];
+  memorySections: ProjectImportMemorySections;
   suggestedOutcomes: SuggestedOutcome[];
   createdAt: string;
 }

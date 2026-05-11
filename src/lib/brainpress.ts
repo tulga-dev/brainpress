@@ -7,6 +7,7 @@ import type {
   Outcome,
   Project,
   ProjectImport,
+  ProjectImportMemorySections,
   ProjectImportSourceType,
   SuggestedOutcome,
   TargetAgent,
@@ -24,6 +25,7 @@ const decisionTerms = ["decision", "must", "should", "avoid", "do not", "constra
 const completedTerms = ["built", "added", "implemented", "completed", "done", "fixed", "shipped", "released"];
 const issueTerms = ["bug", "issue", "broken", "missing", "problem", "error", "failed", "failing", "risk"];
 const roadmapTerms = ["next", "todo", "need to", "build", "add", "later", "follow up", "future", "roadmap"];
+const questionTerms = ["?", "open question", "question", "unknown", "unclear", "tbd", "to confirm", "need to decide"];
 const technicalTerms = [
   "api",
   "agent",
@@ -63,6 +65,9 @@ export interface ProjectHistoryAnalysis extends MemoryAnalysis {
   previewText: string;
   detectedThemes: string[];
   analysisSummary: string;
+  analysisBullets: string[];
+  keyFacts: string[];
+  memorySections: ProjectImportMemorySections;
   suggestedOutcomes: SuggestedOutcome[];
 }
 
@@ -168,6 +173,12 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
   const cleanedText = normalizeProjectHistoryText(inputText);
   const safeText = cleanedText.slice(0, 120_000);
   const warnings: string[] = [];
+  if (metadata.sourceType === "PDF" && cleanedText.length < 300) {
+    warnings.push("This PDF may be scanned or image-only. OCR is not supported yet.");
+  }
+  if (cleanedText.length > 25_000) {
+    warnings.push("Large source detected. Brainpress summarized it into memory sections. Raw text is kept as source.");
+  }
   if (cleanedText.length > safeText.length) {
     warnings.push("This source is long, so Brainpress analyzed the first 120,000 characters for memory signals while preserving the extracted text.");
   }
@@ -176,16 +187,21 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     warnings.push("This source is very large, so Brainpress capped the stored source text to protect localStorage.");
   }
 
+  const signalLines = prepareProjectHistoryLines(safeText);
+  const analysisInput = signalLines.length ? signalLines.join("\n") : safeText;
   const analysis = analyzeMemoryInput(
-    safeText,
+    analysisInput,
     metadata.inputType || (metadata.sourceType === "PDF" ? "Research notes" : "Other"),
     metadata.project,
     metadata.currentMemory,
   );
+  const memorySections = buildProjectHistoryMemorySections(metadata.project, metadata.currentMemory, analysis, signalLines);
+  const keyFacts = extractProjectHistoryKeyFacts(signalLines, memorySections);
   const detectedThemes = dedupe([
-    ...analysis.detected.technicalSignals.map(keywordFromLine),
-    ...analysis.detected.roadmap.map(keywordFromLine),
-    ...analysis.detected.decisions.map(keywordFromLine),
+    ...memorySections.technicalArchitecture.map(keywordFromLine),
+    ...memorySections.roadmap.map(keywordFromLine),
+    ...memorySections.activeDecisions.map(keywordFromLine),
+    ...keyFacts.map(keywordFromLine),
   ])
     .filter(Boolean)
     .slice(0, 8);
@@ -193,8 +209,10 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     analysis,
     metadata.project,
     metadata.currentMemory,
+    memorySections,
   );
-  const analysisSummary = summarizeProjectHistoryAnalysis(metadata.sourceType, analysis, detectedThemes, metadata.pageCount);
+  const analysisBullets = summarizeProjectHistoryAnalysis(metadata, memorySections, keyFacts, detectedThemes, cleanedText.length);
+  const analysisSummary = analysisBullets.join("\n");
   const source: ProjectImport = {
     id: uid("import"),
     projectId: metadata.project.id,
@@ -207,6 +225,9 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     extractedPages: capExtractedPages(metadata.extractedPages || [{ pageNumber: 1, text: cleanedText }]),
     detectedThemes,
     analysisSummary,
+    analysisBullets,
+    keyFacts,
+    memorySections,
     suggestedOutcomes,
     createdAt: new Date().toISOString(),
   };
@@ -219,6 +240,9 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     previewText: safePreview(cleanedText),
     detectedThemes,
     analysisSummary,
+    analysisBullets,
+    keyFacts,
+    memorySections,
     suggestedOutcomes,
   };
 }
@@ -243,6 +267,9 @@ export function createProjectImport({
   pageCount,
   detectedThemes = [],
   analysisSummary = "",
+  analysisBullets = [],
+  keyFacts = [],
+  memorySections = emptyImportMemorySections(),
   suggestedOutcomes = [],
 }: {
   project: Project;
@@ -255,6 +282,9 @@ export function createProjectImport({
   pageCount?: number;
   detectedThemes?: string[];
   analysisSummary?: string;
+  analysisBullets?: string[];
+  keyFacts?: string[];
+  memorySections?: ProjectImportMemorySections;
   suggestedOutcomes?: SuggestedOutcome[];
 }): ProjectImport {
   return {
@@ -269,6 +299,9 @@ export function createProjectImport({
     extractedPages,
     detectedThemes,
     analysisSummary,
+    analysisBullets,
+    keyFacts,
+    memorySections,
     suggestedOutcomes,
     createdAt: new Date().toISOString(),
   };
@@ -276,24 +309,23 @@ export function createProjectImport({
 
 export function mergeMemoryWithProjectHistory(
   currentMemory: Memory,
-  analysis: Pick<ProjectHistoryAnalysis, "memory" | "detected" | "analysisSummary">,
+  analysis: Pick<ProjectHistoryAnalysis, "memory" | "detected" | "analysisSummary" | "memorySections">,
   options: { updateProductSummary?: boolean } = {},
 ): Memory {
+  const sections = analysis.memorySections || fallbackMemorySectionsFromAnalysis(analysis);
   return {
     ...currentMemory,
     productSummary:
       options.updateProductSummary || !currentMemory.productSummary.trim()
-        ? analysis.memory.productSummary
+        ? sections.productSummary || analysis.memory.productSummary
         : currentMemory.productSummary,
-    currentBuildState: mergeText(currentMemory.currentBuildState, analysis.analysisSummary),
-    technicalArchitecture: mergeListText(
-      currentMemory.technicalArchitecture,
-      fieldLines(analysis.memory.technicalArchitecture),
-    ),
-    activeDecisions: mergeListText(currentMemory.activeDecisions, analysis.detected.decisions),
-    completedWork: mergeListText(currentMemory.completedWork, analysis.detected.completedWork),
-    knownIssues: mergeListText(currentMemory.knownIssues, analysis.detected.knownIssues),
-    roadmap: mergeListText(currentMemory.roadmap, analysis.detected.roadmap),
+    currentBuildState: mergeText(currentMemory.currentBuildState, sections.currentBuildState || analysis.analysisSummary),
+    technicalArchitecture: mergeListText(currentMemory.technicalArchitecture, sections.technicalArchitecture),
+    activeDecisions: mergeListText(currentMemory.activeDecisions, sections.activeDecisions),
+    completedWork: mergeListText(currentMemory.completedWork, sections.completedWork),
+    openQuestions: mergeListText(currentMemory.openQuestions, sections.openQuestions),
+    knownIssues: mergeListText(currentMemory.knownIssues, sections.knownIssues),
+    roadmap: mergeListText(currentMemory.roadmap, sections.roadmap),
   };
 }
 
@@ -316,6 +348,196 @@ export function stripRepeatedHeadersFooters(lines: string[]) {
       .map(([line]) => line),
   );
   return lines.filter((line) => line && !repeated.has(line.toLowerCase()));
+}
+
+function emptyImportMemorySections(): ProjectImportMemorySections {
+  return {
+    productSummary: "",
+    currentBuildState: "",
+    technicalArchitecture: [],
+    activeDecisions: [],
+    completedWork: [],
+    knownIssues: [],
+    openQuestions: [],
+    roadmap: [],
+  };
+}
+
+function prepareProjectHistoryLines(input: string) {
+  const rawLines = splitImportSignalChunks(input)
+    .filter((line) => line.length >= 8 || looksLikeCommandOrPath(line));
+
+  const deduped = dedupe(rawLines);
+  const scored = deduped.map((line, index) => ({ line, index, score: importSignalScore(line) }));
+  const signalLines = scored
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 900)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.line);
+
+  return signalLines.length ? signalLines : deduped.slice(0, 300);
+}
+
+function splitImportSignalChunks(input: string) {
+  return splitLines(input).flatMap((line) => {
+    const cleaned = cleanImportLine(line);
+    if (!cleaned) return [];
+    if (cleaned.length <= 260) return [cleaned];
+
+    const sentenceChunks = cleaned
+      .split(/[.!?]\s+/)
+      .map(cleanImportLine)
+      .filter(Boolean);
+    if (sentenceChunks.length > 1) {
+      return sentenceChunks.flatMap((chunk) => (chunk.length <= 260 ? [chunk] : signalWindowsFromLongLine(chunk)));
+    }
+
+    return signalWindowsFromLongLine(cleaned);
+  });
+}
+
+function signalWindowsFromLongLine(line: string) {
+  const signalPatterns = [
+    /\b(?:npm|npx|pnpm|yarn|git|vercel)(?:\s+[\w:./\\=-]+){0,6}/gi,
+    /\b[\w./\\-]+\.(?:tsx|ts|jsx|js|css|scss|md|json|mjs|cjs|html|yml|yaml|prisma)\b/gi,
+    /\/[a-z0-9_-]+(?:\/[a-z0-9_-]+)+/gi,
+    /\b(?:decision|decided|must|should|avoid|do not|constraint|built|added|implemented|completed|done|fixed|shipped|released|bug|issue|broken|missing|problem|error|failed|failing|risk|next|todo|need to|build|future|roadmap|open question|unknown|unclear|tbd|route|schema|component|database|model|integration|codex|agent)\b/gi,
+  ];
+  const windows: string[] = [];
+
+  signalPatterns.forEach((pattern) => {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(line))) {
+      const start = Math.max(0, match.index - 120);
+      const end = Math.min(line.length, match.index + match[0].length + 180);
+      windows.push(cleanImportLine(line.slice(start, end)));
+    }
+  });
+
+  return dedupe(windows.length ? windows : [line.slice(0, 260)]);
+}
+
+function buildProjectHistoryMemorySections(
+  project: Project,
+  currentMemory: Memory,
+  analysis: MemoryAnalysis,
+  signalLines: string[],
+): ProjectImportMemorySections {
+  const activeDecisions = conciseMemoryLines(analysis.detected.decisions, 10);
+  const completedWork = conciseMemoryLines(analysis.detected.completedWork, 10);
+  const knownIssues = conciseMemoryLines(analysis.detected.knownIssues, 10);
+  const roadmap = conciseMemoryLines(analysis.detected.roadmap, 10);
+  const technicalArchitecture = conciseMemoryLines(analysis.detected.technicalSignals, 10);
+  const openQuestions = conciseMemoryLines(collectLines(signalLines, questionTerms), 10);
+  const themeLines = [...technicalArchitecture, ...roadmap, ...activeDecisions].map(keywordFromLine);
+
+  return {
+    productSummary: projectSummary(project, themeLines),
+    currentBuildState: summarizeImportedBuildState(currentMemory, completedWork, knownIssues, roadmap),
+    technicalArchitecture,
+    activeDecisions,
+    completedWork,
+    knownIssues,
+    openQuestions,
+    roadmap,
+  };
+}
+
+function fallbackMemorySectionsFromAnalysis(
+  analysis: Pick<ProjectHistoryAnalysis, "memory" | "detected">,
+): ProjectImportMemorySections {
+  return {
+    productSummary: analysis.memory.productSummary,
+    currentBuildState: analysis.memory.currentBuildState,
+    technicalArchitecture: conciseMemoryLines(fieldLines(analysis.memory.technicalArchitecture), 10),
+    activeDecisions: conciseMemoryLines(analysis.detected.decisions, 10),
+    completedWork: conciseMemoryLines(analysis.detected.completedWork, 10),
+    knownIssues: conciseMemoryLines(analysis.detected.knownIssues, 10),
+    openQuestions: conciseMemoryLines(fieldLines(analysis.memory.openQuestions), 10),
+    roadmap: conciseMemoryLines(analysis.detected.roadmap, 10),
+  };
+}
+
+function extractProjectHistoryKeyFacts(signalLines: string[], memorySections: ProjectImportMemorySections) {
+  const preferred = signalLines.filter((line) =>
+    looksLikeCommandOrPath(line) ||
+    hasAny(line, ["vercel", "github", "git ", "build", "typecheck", "route", "page.tsx", "schema.prisma", "admin", "share/"]),
+  );
+
+  return conciseMemoryLines(
+    [
+      ...preferred,
+      ...memorySections.activeDecisions,
+      ...memorySections.technicalArchitecture,
+      ...memorySections.knownIssues,
+      ...memorySections.roadmap,
+    ],
+    10,
+  );
+}
+
+function summarizeImportedBuildState(
+  currentMemory: Memory,
+  completedWork: string[],
+  knownIssues: string[],
+  roadmap: string[],
+) {
+  const parts: string[] = [];
+  if (completedWork.length) parts.push(`Completed work detected: ${completedWork.slice(0, 2).join("; ")}.`);
+  if (knownIssues.length) parts.push(`Open issues detected: ${knownIssues.slice(0, 2).join("; ")}.`);
+  if (roadmap.length) parts.push(`Next steps detected: ${roadmap.slice(0, 2).join("; ")}.`);
+  if (!parts.length && currentMemory.currentBuildState.trim()) {
+    parts.push("The import did not add a stronger build-state signal than the current project memory.");
+  }
+  return parts.join(" ");
+}
+
+function conciseMemoryLines(lines: string[], limit: number) {
+  return dedupe(
+    lines
+      .map(cleanImportLine)
+      .map((line) => truncateMemoryLine(line, 190))
+      .filter((line) => line.length >= 8 || looksLikeCommandOrPath(line)),
+  )
+    .sort((a, b) => importSignalScore(b) - importSignalScore(a))
+    .slice(0, limit);
+}
+
+function cleanImportLine(line: string) {
+  return line
+    .replace(/^page\s+\d+\s*/i, "")
+    .replace(/^[-*]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateMemoryLine(line: string, maxLength: number) {
+  if (line.length <= maxLength) return line;
+  return `${line.slice(0, maxLength - 1).trim()}...`;
+}
+
+function looksLikeCommandOrPath(line: string) {
+  return /\b(npm|npx|pnpm|yarn|git|vercel)\b/i.test(line) ||
+    /\b[\w./\\-]+\.(?:tsx|ts|jsx|js|css|scss|md|json|mjs|cjs|html|yml|yaml|prisma)\b/i.test(line) ||
+    /\bsrc[\\/]/i.test(line) ||
+    /\bapp[\\/]/i.test(line) ||
+    /\/[a-z0-9_-]+(?:\/[a-z0-9_-]+)+/i.test(line);
+}
+
+function importSignalScore(line: string) {
+  let score = 0;
+  if (hasAny(line, decisionTerms)) score += 5;
+  if (hasAny(line, issueTerms)) score += 5;
+  if (hasAny(line, roadmapTerms)) score += 4;
+  if (hasAny(line, completedTerms)) score += 4;
+  if (hasAny(line, technicalTerms)) score += 3;
+  if (hasAny(line, questionTerms)) score += 3;
+  if (looksLikeCommandOrPath(line)) score += 5;
+  if (hasAny(line, ["vercel", "github", "branch", "remote", "root directory", "build command"])) score += 3;
+  if (line.length > 220) score -= 2;
+  return score;
 }
 
 export function pdfTextExtractionFailureMessage() {
@@ -517,37 +739,52 @@ function keywordFromLine(line: string) {
 }
 
 function summarizeProjectHistoryAnalysis(
-  sourceType: ProjectImportSourceType,
-  analysis: MemoryAnalysis,
+  metadata: ProjectHistoryMetadata,
+  memorySections: ProjectImportMemorySections,
+  keyFacts: string[],
   detectedThemes: string[],
-  pageCount?: number,
+  sourceLength: number,
 ) {
-  const sections = [
-    `${analysis.detected.decisions.length} decision signal${analysis.detected.decisions.length === 1 ? "" : "s"}`,
-    `${analysis.detected.completedWork.length} completed-work signal${analysis.detected.completedWork.length === 1 ? "" : "s"}`,
-    `${analysis.detected.knownIssues.length} issue signal${analysis.detected.knownIssues.length === 1 ? "" : "s"}`,
-    `${analysis.detected.roadmap.length} roadmap signal${analysis.detected.roadmap.length === 1 ? "" : "s"}`,
-    `${analysis.detected.technicalSignals.length} architecture signal${analysis.detected.technicalSignals.length === 1 ? "" : "s"}`,
-  ];
-  const pageText = sourceType === "PDF" && pageCount ? ` across ${pageCount} page${pageCount === 1 ? "" : "s"}` : "";
-  const themeText = detectedThemes.length ? ` Themes: ${detectedThemes.slice(0, 5).join(", ")}.` : "";
-  return `Brainpress analyzed ${sourceType === "PDF" ? "a PDF" : "pasted text"}${pageText} and found ${sections.join(", ")}.${themeText}`;
+  const pageText = metadata.sourceType === "PDF" && metadata.pageCount
+    ? ` across ${metadata.pageCount} page${metadata.pageCount === 1 ? "" : "s"}`
+    : "";
+  const sourceName = metadata.fileName || metadata.title || "imported source";
+  const bullets = [
+    `Source analyzed: ${sourceName}${pageText}.`,
+    `Brainpress converted ${sourceLength.toLocaleString()} characters of source text into structured project memory.`,
+    keyFacts[0] ? `Key fact: ${keyFacts[0]}` : "",
+    memorySections.activeDecisions.length ? `Decision signal: ${memorySections.activeDecisions[0]}` : "",
+    memorySections.currentBuildState ? `Build state: ${memorySections.currentBuildState}` : "",
+    memorySections.knownIssues.length ? `Known issue: ${memorySections.knownIssues[0]}` : "",
+    memorySections.roadmap.length ? `Next step: ${memorySections.roadmap[0]}` : "",
+    detectedThemes.length ? `Detected themes: ${detectedThemes.slice(0, 5).join(", ")}.` : "",
+    "Raw extracted text is preserved as source history, but the memory cards below stay concise.",
+  ].filter(Boolean);
+
+  return bullets.slice(0, 8);
 }
 
 function generateSuggestedOutcomesFromHistory(
   analysis: MemoryAnalysis,
   project: Project,
   currentMemory: Memory,
+  memorySections?: ProjectImportMemorySections,
 ): SuggestedOutcome[] {
   const constraints = dedupe([...project.constraints, ...fieldLines(currentMemory.activeDecisions)]);
   const verificationCommands = project.verificationCommands.length
     ? project.verificationCommands
     : ["npm run typecheck", "npm test", "npm run build"];
   const suggestions: SuggestedOutcome[] = [];
+  const roadmap = memorySections?.roadmap.length ? memorySections.roadmap : analysis.detected.roadmap;
+  const knownIssues = memorySections?.knownIssues.length ? memorySections.knownIssues : analysis.detected.knownIssues;
+  const technicalSignals = memorySections?.technicalArchitecture.length
+    ? memorySections.technicalArchitecture
+    : analysis.detected.technicalSignals;
+  const openQuestions = memorySections?.openQuestions || [];
 
-  if (analysis.detected.roadmap.length) {
+  if (roadmap.length) {
     suggestions.push({
-      title: titleFromSignal(analysis.detected.roadmap[0], "Clarify product roadmap from imported source"),
+      title: titleFromSignal(roadmap[0], "Clarify product roadmap from imported source"),
       goal: "Turn the imported roadmap signals into a focused, verifiable product outcome.",
       acceptanceCriteria: [
         "Roadmap item is narrowed to one buildable outcome.",
@@ -559,9 +796,9 @@ function generateSuggestedOutcomesFromHistory(
     });
   }
 
-  if (analysis.detected.knownIssues.length) {
+  if (knownIssues.length) {
     suggestions.push({
-      title: titleFromSignal(analysis.detected.knownIssues[0], "Fix known issues extracted from project history"),
+      title: titleFromSignal(knownIssues[0], "Fix known issues extracted from project history"),
       goal: "Resolve the clearest issue found in the imported project history without expanding scope.",
       acceptanceCriteria: [
         "The extracted issue is reproduced or clearly understood.",
@@ -573,7 +810,7 @@ function generateSuggestedOutcomesFromHistory(
     });
   }
 
-  if (analysis.detected.technicalSignals.length) {
+  if (technicalSignals.length) {
     suggestions.push({
       title: "Create Codex task from imported technical architecture",
       goal: "Convert the imported architecture notes into a safe, agent-ready implementation task.",
@@ -587,7 +824,7 @@ function generateSuggestedOutcomesFromHistory(
     });
   }
 
-  if (analysis.memory.openQuestions.trim() || analysis.detected.decisions.length) {
+  if (openQuestions.length || analysis.memory.openQuestions.trim() || analysis.detected.decisions.length) {
     suggestions.push({
       title: "Turn open questions into product decisions",
       goal: "Review imported decisions and unresolved questions, then convert them into explicit product direction.",
@@ -637,7 +874,7 @@ function titleFromSignal(signal: string, fallback: string) {
 }
 
 function safePreview(value: string) {
-  const preview = value.slice(0, 4_000);
+  const preview = value.slice(0, 1_000);
   return value.length > preview.length ? `${preview}\n\n[Preview truncated. Full extracted text is stored in the source.]` : preview;
 }
 
