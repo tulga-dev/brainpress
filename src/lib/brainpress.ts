@@ -362,6 +362,50 @@ export function appendProjectImport(
   };
 }
 
+export function savePendingImportToProjectMemory({
+  project,
+  currentMemory,
+  currentImports,
+  analysis,
+  updateProductSummary = false,
+  existingSourceId,
+}: {
+  project: Project;
+  currentMemory: Memory;
+  currentImports: ProjectImport[];
+  analysis: ProjectHistoryAnalysis;
+  updateProductSummary?: boolean;
+  existingSourceId?: string | null;
+}) {
+  const savedImport = existingSourceId
+    ? updateProjectImport(currentImports, existingSourceId, analysis.source)
+    : appendProjectImport(currentImports, analysis.source);
+  const mergedMemory = mergeMemoryWithProjectHistory(currentMemory, analysis, { updateProductSummary });
+
+  return {
+    source: savedImport.source,
+    imports: savedImport.imports,
+    memory: {
+      ...mergedMemory,
+      consolidated: buildConsolidatedProjectMemory(project, mergedMemory, savedImport.imports),
+    },
+  };
+}
+
+export function savePendingImportSourceOnly({
+  currentImports,
+  analysis,
+  existingSourceId,
+}: {
+  currentImports: ProjectImport[];
+  analysis: ProjectHistoryAnalysis;
+  existingSourceId?: string | null;
+}) {
+  return existingSourceId
+    ? updateProjectImport(currentImports, existingSourceId, analysis.source)
+    : appendProjectImport(currentImports, analysis.source);
+}
+
 export function updateProjectImport(
   imports: ProjectImport[],
   sourceId: string,
@@ -384,6 +428,10 @@ export function updateProjectImport(
       ? imports.map((item) => (item.id === sourceId ? updatedSource : item))
       : [updatedSource, ...imports],
   };
+}
+
+export function savedSourcesLabel(count: number) {
+  return `${count} эх сурвалж хадгалагдсан / ${count} source${count === 1 ? "" : "s"} saved`;
 }
 
 export function buildConsolidatedProjectMemory(

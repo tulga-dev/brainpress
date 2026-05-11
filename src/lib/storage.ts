@@ -54,7 +54,7 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     ),
     agentRuns: (state.agentRuns || []).map((run) => normalizeAgentRun(run, safetyRulesByProject.get(run.projectId))),
     buildLogs: (state.buildLogs || []).map(normalizeBuildLog),
-    imports: (state.imports || []).map((source, index) => normalizeProjectImport(source, index)),
+    imports: normalizeProjectImports(state.imports || []),
   };
 }
 
@@ -164,6 +164,22 @@ function normalizeBuildLog(log: BuildLog): BuildLog {
   };
 }
 
+function normalizeProjectImports(imports: ProjectImport[]): ProjectImport[] {
+  const seenIds = new Set<string>();
+
+  return imports.map((source, index) => {
+    const normalized = normalizeProjectImport(source, index);
+    if (!seenIds.has(normalized.id)) {
+      seenIds.add(normalized.id);
+      return normalized;
+    }
+
+    const id = uniqueLegacyImportId(source, index, seenIds);
+    seenIds.add(id);
+    return { ...normalized, id };
+  });
+}
+
 function normalizeProjectImport(source: ProjectImport, index = 0): ProjectImport {
   const memorySections = source.memorySections || {
     productSummary: "",
@@ -178,7 +194,7 @@ function normalizeProjectImport(source: ProjectImport, index = 0): ProjectImport
 
   return {
     ...source,
-    id: source.id || `import_legacy_${index}_${source.createdAt || "unknown"}`,
+    id: source.id || uniqueLegacyImportId(source, index),
     sourceType: source.sourceType || "TextPaste",
     title: source.title || source.fileName || "Imported project history",
     extractedText: source.extractedText || "",
@@ -203,4 +219,21 @@ function normalizeProjectImport(source: ProjectImport, index = 0): ProjectImport
     suggestedOutcomes: source.suggestedOutcomes || [],
     createdAt: source.createdAt || new Date().toISOString(),
   };
+}
+
+function uniqueLegacyImportId(source: ProjectImport, index: number, seenIds = new Set<string>()) {
+  const base = `import_legacy_${index}_${sanitizeImportIdPart(source.createdAt || source.fileName || source.title || "source")}`;
+  let candidate = base;
+  let suffix = 1;
+
+  while (seenIds.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+function sanitizeImportIdPart(value: string) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "source";
 }

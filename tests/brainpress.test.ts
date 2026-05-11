@@ -23,6 +23,9 @@ import {
   memoryFromConsolidatedProjectMemory,
   mergeMemoryWithProjectHistory,
   pdfTextExtractionFailureMessage,
+  savePendingImportToProjectMemory,
+  savePendingImportSourceOnly,
+  savedSourcesLabel,
   updateProjectImport,
 } from "../src/lib/brainpress";
 import {
@@ -1023,6 +1026,140 @@ test("saving first and second PDFs appends separate saved sources", () => {
   assert.match(secondSave.imports[1].analysisSummary, /first chat|memory/i);
   assert.match(secondSave.imports[1].memorySections.activeDecisions.join("\n"), /keep first source metadata/i);
   assert.match(secondSave.imports[0].memorySections.knownIssues.join("\n"), /previous PDF was replaced/i);
+});
+
+test("Save to Memory UI helper appends a second pending PDF with a fresh source id", () => {
+  const firstAnalysis = analyzeProjectHistory("Completed: browser flow saved PDF one.\nNext add second upload.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "same-name",
+    fileName: "same-name.pdf",
+    pageCount: 1,
+  });
+  const firstSave = savePendingImportToProjectMemory({
+    project: seedProject,
+    currentMemory: seedMemory,
+    currentImports: [],
+    analysis: { ...firstAnalysis, source: { ...firstAnalysis.source, id: "pending_review" } },
+  });
+  const secondAnalysis = analyzeProjectHistory("Completed: browser flow saved PDF two.\nIssue: source one must stay.", {
+    project: seedProject,
+    currentMemory: firstSave.memory,
+    sourceType: "PDF",
+    title: "same-name",
+    fileName: "same-name.pdf",
+    pageCount: 1,
+  });
+  const secondSave = savePendingImportToProjectMemory({
+    project: seedProject,
+    currentMemory: firstSave.memory,
+    currentImports: firstSave.imports,
+    analysis: { ...secondAnalysis, source: { ...secondAnalysis.source, id: "pending_review" } },
+  });
+
+  assert.equal(secondSave.imports.length, 2);
+  assert.notEqual(secondSave.imports[0].id, secondSave.imports[1].id);
+  assert.equal(secondSave.imports[0].fileName, "same-name.pdf");
+  assert.equal(secondSave.imports[1].fileName, "same-name.pdf");
+  assert.match(secondSave.imports[0].extractedText, /PDF two/i);
+  assert.match(secondSave.imports[1].extractedText, /PDF one/i);
+  assert.equal(secondSave.memory.consolidated?.sourceCount, 2);
+  assert.match(secondSave.memory.consolidated?.whatIsDone.join("\n") || "", /PDF one/i);
+  assert.match(secondSave.memory.consolidated?.whatIsDone.join("\n") || "", /PDF two/i);
+});
+
+test("Save as Source Only UI helper appends without counting a pending review", () => {
+  const saved = analyzeProjectHistory("Completed: source-only one remains saved.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Source only",
+    fileName: "same-name.pdf",
+    pageCount: 1,
+  });
+  const pending = analyzeProjectHistory("Completed: pending source-only two.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Source only",
+    fileName: "same-name.pdf",
+    pageCount: 1,
+  });
+  const first = savePendingImportSourceOnly({ currentImports: [], analysis: saved });
+  const second = savePendingImportSourceOnly({ currentImports: first.imports, analysis: pending });
+
+  assert.equal(first.imports.length, 1);
+  assert.equal(second.imports.length, 2);
+  assert.notEqual(second.imports[0].id, second.imports[1].id);
+  assert.equal(getMemoryTabMode(seedMemory, pending), "review");
+  assert.equal(savedSourcesLabel(second.imports.length), "2 эх сурвалж хадгалагдсан / 2 sources saved");
+});
+
+test("legacy duplicate import ids are normalized instead of collapsing saved PDFs", () => {
+  const previousWindow = Reflect.get(globalThis, "window");
+  const store = new Map<string, string>();
+  const fakeWindow = {
+    localStorage: {
+      getItem: (key: string) => store.get(key) || null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    },
+  };
+
+  Reflect.set(globalThis, "window", fakeWindow);
+  try {
+    store.set(
+      "brainpress.mvp.state.v1",
+      JSON.stringify({
+        ...initialState,
+        imports: [
+          {
+            id: "duplicate_import",
+            projectId: seedProject.id,
+            sourceType: "PDF",
+            title: "Same name",
+            fileName: "same.pdf",
+            extractedText: "Completed: first raw text is preserved.",
+            createdAt: "2026-05-11T00:00:00.000Z",
+          },
+          {
+            id: "duplicate_import",
+            projectId: seedProject.id,
+            sourceType: "PDF",
+            title: "Same name",
+            fileName: "same.pdf",
+            extractedText: "Completed: second raw text is preserved.",
+            createdAt: "2026-05-11T00:01:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const state = loadBrainpressState();
+
+    assert.equal(state.imports.length, 2);
+    assert.notEqual(state.imports[0].id, state.imports[1].id);
+    assert.equal(state.imports[0].fileName, "same.pdf");
+    assert.equal(state.imports[1].fileName, "same.pdf");
+    assert.match(state.imports[0].extractedText, /first raw text/i);
+    assert.match(state.imports[1].extractedText, /second raw text/i);
+  } finally {
+    if (typeof previousWindow === "undefined") {
+      Reflect.deleteProperty(globalThis, "window");
+    } else {
+      Reflect.set(globalThis, "window", previousWindow);
+    }
+  }
+});
+
+test("Sources panel exposes saved source count and names", () => {
+  const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+
+  assert.match(savedSourcesLabel(2), /2 sources saved/);
+  assert.match(componentSource, /savedSourcesLabel\(imports\.length\)/);
+  assert.match(componentSource, /Saved sources:/);
 });
 
 test("Save as Source Only appends a source without changing dashboard memory", () => {

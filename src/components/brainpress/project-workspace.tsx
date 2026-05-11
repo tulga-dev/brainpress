@@ -28,7 +28,6 @@ import { nextTaskForInterruptedRun, type CodexRunEvent, type CodexRunState } fro
 import {
   agentReadiness,
   analyzeProjectHistory,
-  appendProjectImport,
   buildConsolidatedProjectMemory,
   dashboardHasContent,
   dedupe,
@@ -41,13 +40,14 @@ import {
   ingestAgentResult,
   linesToText,
   memoryFromConsolidatedProjectMemory,
-  mergeMemoryWithProjectHistory,
   pdfTextExtractionFailureMessage,
+  savePendingImportSourceOnly,
+  savePendingImportToProjectMemory,
+  savedSourcesLabel,
   type ProjectHistoryAnalysis,
   type LegacyMemoryFieldKey,
   memoryCompleteness,
   uid,
-  updateProjectImport,
   verificationReadiness,
 } from "@/lib/brainpress";
 import { extractPdfText, formatFileSize } from "@/lib/pdf-intake";
@@ -315,11 +315,15 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     if (!projectHistoryAnalysis) return;
     const existingSourceId = saveMode === "update" ? reanalyzingSourceId : null;
     setState((current) => {
-      const savedImport = existingSourceId
-        ? updateProjectImport(current.imports || [], existingSourceId, projectHistoryAnalysis.source)
-        : appendProjectImport(current.imports || [], projectHistoryAnalysis.source);
       const currentMemory = current.memories[activeProject.id];
-      const mergedMemory = mergeMemoryWithProjectHistory(currentMemory, projectHistoryAnalysis, { updateProductSummary });
+      const saved = savePendingImportToProjectMemory({
+        project: activeProject,
+        currentMemory,
+        currentImports: current.imports || [],
+        analysis: projectHistoryAnalysis,
+        updateProductSummary,
+        existingSourceId,
+      });
 
       return {
         ...current,
@@ -328,12 +332,9 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ),
         memories: {
           ...current.memories,
-          [activeProject.id]: {
-            ...mergedMemory,
-            consolidated: buildConsolidatedProjectMemory(activeProject, mergedMemory, savedImport.imports),
-          },
+          [activeProject.id]: saved.memory,
         },
-        imports: savedImport.imports,
+        imports: saved.imports,
       };
     });
     setImportText("");
@@ -353,9 +354,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const existingSourceId = saveMode === "update" ? reanalyzingSourceId : null;
     setState((current) => ({
       ...current,
-      imports: existingSourceId
-        ? updateProjectImport(current.imports || [], existingSourceId, projectHistoryAnalysis.source).imports
-        : appendProjectImport(current.imports || [], projectHistoryAnalysis.source).imports,
+      imports: savePendingImportSourceOnly({
+        currentImports: current.imports || [],
+        analysis: projectHistoryAnalysis,
+        existingSourceId,
+      }).imports,
     }));
     setLastSavedSourceTitle(projectHistoryAnalysis.source.title);
     setRebuildStatus(existingSourceId ? "Source updated. Project memory was not changed." : "Source saved. Project memory was not changed.");
@@ -2545,12 +2548,18 @@ function ImportsPanel({
   onViewImport: (source: ProjectImport | null) => void;
   onReAnalyzeImport: (source: ProjectImport) => void;
 }) {
+  const sourceCountLabel = savedSourcesLabel(imports.length);
+  const visibleSourceNames = imports
+    .slice(0, 5)
+    .map((source) => source.fileName || source.title)
+    .join(", ");
+
   return (
     <Panel>
       <PanelBody>
         <SectionHeader
           title="Sources"
-          eyebrow="Imports"
+          eyebrow={imports.length ? sourceCountLabel : "Imports"}
           action={
             <Button onClick={onRebuildMemory} disabled={!imports.length || rebuildBusy}>
               <Wand2 className="h-4 w-4" />
@@ -2560,6 +2569,13 @@ function ImportsPanel({
         />
         {imports.length ? (
           <div className="space-y-3">
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+              <p className="text-sm font-semibold text-blue-800">{sourceCountLabel}</p>
+              <p className="mt-1 text-sm text-blue-700">
+                Saved sources: {visibleSourceNames}
+                {imports.length > 5 ? `, and ${imports.length - 5} more` : ""}
+              </p>
+            </div>
             {imports.slice(0, 8).map((source) => (
               <div key={source.id} className="rounded-lg border border-line bg-white p-4">
                 <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
@@ -2569,9 +2585,7 @@ function ImportsPanel({
                       <AnalyzerBadge value={source.analyzer} />
                       <p className="font-medium text-ink">{source.title}</p>
                     </div>
-                    <p className="text-sm text-slate-500">
-                      {source.fileName || "Text paste"} · {new Date(source.createdAt).toLocaleString()}
-                    </p>
+                    <p className="text-sm text-slate-500">{source.fileName || "Text paste"} / {new Date(source.createdAt).toLocaleString()}</p>
                     <p className="mt-2 line-clamp-3 text-sm leading-6 text-slateText">
                       {source.plainEnglishSummary || source.analysisSummary || "Source saved for future memory rebuilds."}
                     </p>
