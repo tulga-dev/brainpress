@@ -3,7 +3,7 @@
 import { initialState } from "@/lib/seed";
 import { defaultPermissionSafetyRules, ensurePermissionSafetyRules } from "@/lib/safety";
 import { buildCodexCommandPreview } from "@/lib/codex-shared";
-import type { AgentPrompt, AgentRun, BrainpressState, BuildLog, Project, ProjectImport } from "@/lib/types";
+import type { AgentPrompt, AgentRun, BrainpressState, BuildLog, ConsolidatedProjectMemory, Memory, Project, ProjectImport } from "@/lib/types";
 
 const storageKey = "brainpress.mvp.state.v1";
 
@@ -41,16 +41,58 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
   const projects = state.projects.map(normalizeProject);
   const safetyRulesByProject = new Map(projects.map((project) => [project.id, project.safetyRules]));
   const projectIdByOutcome = new Map(state.outcomes.map((outcome) => [outcome.id, outcome.projectId]));
+  const memories = Object.fromEntries(
+    Object.entries(state.memories || {}).map(([projectId, memory]) => [projectId, normalizeMemory(memory, projectId)]),
+  );
 
   return {
     ...state,
     projects,
+    memories,
     prompts: (state.prompts || []).map((prompt) =>
       normalizePrompt(prompt, safetyRulesByProject, projectIdByOutcome),
     ),
     agentRuns: (state.agentRuns || []).map((run) => normalizeAgentRun(run, safetyRulesByProject.get(run.projectId))),
     buildLogs: (state.buildLogs || []).map(normalizeBuildLog),
     imports: (state.imports || []).map(normalizeProjectImport),
+  };
+}
+
+function normalizeMemory(memory: Memory, projectId: string): Memory {
+  return {
+    projectId: memory.projectId || projectId,
+    productSummary: memory.productSummary || "",
+    vision: memory.vision || "",
+    targetUsers: memory.targetUsers || "",
+    currentBuildState: memory.currentBuildState || "",
+    technicalArchitecture: memory.technicalArchitecture || "",
+    activeDecisions: memory.activeDecisions || "",
+    deprecatedIdeas: memory.deprecatedIdeas || "",
+    completedWork: memory.completedWork || "",
+    openQuestions: memory.openQuestions || "",
+    knownIssues: memory.knownIssues || "",
+    roadmap: memory.roadmap || "",
+    consolidated: memory.consolidated ? normalizeConsolidatedProjectMemory(memory.consolidated) : undefined,
+  };
+}
+
+function normalizeConsolidatedProjectMemory(consolidated: ConsolidatedProjectMemory): ConsolidatedProjectMemory {
+  return {
+    productSnapshot: consolidated.productSnapshot || "",
+    plainEnglishSummary: consolidated.plainEnglishSummary || "",
+    whatIsDone: consolidated.whatIsDone || [],
+    whatIsBrokenOrRisky: consolidated.whatIsBrokenOrRisky || [],
+    whatToDoNext: consolidated.whatToDoNext || [],
+    roadmapNow: consolidated.roadmapNow || [],
+    roadmapNext: consolidated.roadmapNext || [],
+    roadmapLater: consolidated.roadmapLater || [],
+    suggestedNextOutcome: consolidated.suggestedNextOutcome || null,
+    technicalDetails: consolidated.technicalDetails || [],
+    openQuestions: consolidated.openQuestions || [],
+    sourceIds: consolidated.sourceIds || [],
+    sourceCount: typeof consolidated.sourceCount === "number" ? consolidated.sourceCount : 0,
+    analyzer: consolidated.analyzer || "Local",
+    updatedAt: consolidated.updatedAt || new Date().toISOString(),
   };
 }
 

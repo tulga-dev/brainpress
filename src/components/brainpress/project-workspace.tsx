@@ -28,15 +28,19 @@ import { nextTaskForInterruptedRun, type CodexRunEvent, type CodexRunState } fro
 import {
   agentReadiness,
   analyzeProjectHistory,
+  buildConsolidatedProjectMemory,
   dedupe,
   fieldLines,
   generateAgentPrompt,
   generateOutcomePlan,
+  getVisibleMemoryCards,
   ingestAgentResult,
   linesToText,
+  memoryFromConsolidatedProjectMemory,
   mergeMemoryWithProjectHistory,
   pdfTextExtractionFailureMessage,
   type ProjectHistoryAnalysis,
+  type LegacyMemoryFieldKey,
   memoryCompleteness,
   uid,
   verificationReadiness,
@@ -56,6 +60,7 @@ import type {
   SuggestedOutcome,
   TargetAgent,
   AgentRun,
+  ConsolidatedProjectMemory,
   VerificationResult,
 } from "@/lib/types";
 import { summarizeVerificationResults } from "@/lib/verification";
@@ -106,20 +111,6 @@ interface LiveRunLog {
   message?: string;
 }
 
-const memoryFields: Array<{ key: keyof Omit<Memory, "projectId">; title: string }> = [
-  { key: "productSummary", title: "Product Summary" },
-  { key: "vision", title: "Vision" },
-  { key: "targetUsers", title: "Target Users" },
-  { key: "currentBuildState", title: "Current Build State" },
-  { key: "technicalArchitecture", title: "Technical Architecture" },
-  { key: "activeDecisions", title: "Active Decisions" },
-  { key: "deprecatedIdeas", title: "Deprecated Ideas" },
-  { key: "completedWork", title: "Completed Work" },
-  { key: "openQuestions", title: "Open Questions" },
-  { key: "knownIssues", title: "Known Issues" },
-  { key: "roadmap", title: "Roadmap" },
-];
-
 const emptyOutcomeForm = {
   title: "",
   goal: "",
@@ -140,8 +131,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [pdfExtractionStatus, setPdfExtractionStatus] = useState("");
   const [pdfExtractionError, setPdfExtractionError] = useState("");
   const [projectHistoryAnalysis, setProjectHistoryAnalysis] = useState<ProjectHistoryAnalysis | null>(null);
+  const [consolidatedPreview, setConsolidatedPreview] = useState<ConsolidatedProjectMemory | null>(null);
   const [viewingImport, setViewingImport] = useState<ProjectImport | null>(null);
   const [analysisWarnings, setAnalysisWarnings] = useState<string[]>([]);
+  const [rebuildStatus, setRebuildStatus] = useState("");
+  const [rebuildWarnings, setRebuildWarnings] = useState<string[]>([]);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
+  const [lastSavedSourceTitle, setLastSavedSourceTitle] = useState("");
   const [outcomeForm, setOutcomeForm] = useState(emptyOutcomeForm);
   const [targetAgent, setTargetAgent] = useState<TargetAgent>("Codex");
   const [copiedPromptId, setCopiedPromptId] = useState<string | null>(null);
@@ -181,6 +177,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const projectImports = useMemo(
     () => (state.imports || []).filter((source) => source.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [projectId, state.imports],
+  );
+  const memoryDashboard = useMemo(
+    () => project && memory ? memory.consolidated || buildConsolidatedProjectMemory(project, memory, projectImports) : null,
+    [project, memory, projectImports],
   );
 
   if (!project || !memory) {
@@ -301,7 +301,6 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
   function saveImportToMemory(updateProductSummary = false) {
     if (!projectHistoryAnalysis) return;
-    const mergedMemory = mergeMemoryWithProjectHistory(activeMemory, projectHistoryAnalysis, { updateProductSummary });
     setState((current) => ({
       ...current,
       projects: current.projects.map((item) =>
@@ -309,11 +308,23 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       ),
       memories: {
         ...current.memories,
-        [activeProject.id]: mergedMemory,
+        [activeProject.id]: (() => {
+          const currentMemory = current.memories[activeProject.id];
+          const mergedMemory = mergeMemoryWithProjectHistory(currentMemory, projectHistoryAnalysis, { updateProductSummary });
+          const nextImports = addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source);
+          return {
+            ...mergedMemory,
+            consolidated: buildConsolidatedProjectMemory(activeProject, mergedMemory, nextImports),
+          };
+        })(),
       },
       imports: addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source),
     }));
     setImportText("");
+    setSelectedPdfFile(null);
+    setLastSavedSourceTitle(projectHistoryAnalysis.source.title);
+    setProjectHistoryAnalysis(null);
+    setConsolidatedPreview(null);
   }
 
   function saveImportSourceOnly() {
@@ -322,12 +333,90 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       ...current,
       imports: addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source),
     }));
+    setLastSavedSourceTitle(projectHistoryAnalysis.source.title);
+    setProjectHistoryAnalysis(null);
+    setConsolidatedPreview(null);
   }
 
   function discardImportReview() {
     setProjectHistoryAnalysis(null);
     setPdfExtractionError("");
     setPdfExtractionStatus("");
+    setConsolidatedPreview(null);
+  }
+
+  async function rebuildProjectMemoryFromSources() {
+    if (!projectImports.length) {
+      setRebuildWarnings(["Import at least one PDF or text source before rebuilding project memory."]);
+      return;
+    }
+
+    setRebuildBusy(true);
+    setRebuildStatus("Rebuilding project memory from saved sources");
+    setRebuildWarnings([]);
+    setConsolidatedPreview(null);
+
+    try {
+      const response = await fetch("/api/brainpress/memory/rebuild", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: activeProject,
+          currentMemory: activeMemory,
+          sources: projectImports,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        consolidated?: ConsolidatedProjectMemory;
+        warnings?: string[];
+        error?: string;
+      };
+
+      if (response.ok && payload.consolidated) {
+        setConsolidatedPreview(payload.consolidated);
+        setRebuildWarnings(payload.warnings || []);
+        setRebuildStatus(payload.consolidated.analyzer === "AI" ? "AI consolidated memory preview ready" : "Local consolidated memory preview ready");
+        return;
+      }
+
+      const fallback = buildConsolidatedProjectMemory(activeProject, activeMemory, projectImports, { analyzer: "AIUnavailable" });
+      setConsolidatedPreview(fallback);
+      setRebuildWarnings([payload.error || "AI memory rebuild unavailable. Local merge used."]);
+      setRebuildStatus("Local consolidated memory preview ready");
+    } catch (error) {
+      const fallback = buildConsolidatedProjectMemory(activeProject, activeMemory, projectImports, { analyzer: "AIUnavailable" });
+      setConsolidatedPreview(fallback);
+      setRebuildWarnings([
+        error instanceof Error
+          ? `AI memory rebuild unavailable. Local merge used. ${error.message}`
+          : "AI memory rebuild unavailable. Local merge used.",
+      ]);
+      setRebuildStatus("Local consolidated memory preview ready");
+    } finally {
+      setRebuildBusy(false);
+    }
+  }
+
+  function saveConsolidatedMemory() {
+    if (!consolidatedPreview) return;
+    setState((current) => ({
+      ...current,
+      memories: {
+        ...current.memories,
+        [activeProject.id]: memoryFromConsolidatedProjectMemory(current.memories[activeProject.id], consolidatedPreview),
+      },
+    }));
+    setConsolidatedPreview(null);
+    setRebuildStatus("Consolidated memory saved");
+  }
+
+  function importAnotherPdf() {
+    setMemoryImportMode("Upload PDF");
+    setSelectedPdfFile(null);
+    setPdfExtractionError("");
+    setPdfExtractionStatus("");
+    setProjectHistoryAnalysis(null);
+    setLastSavedSourceTitle("");
   }
 
   async function reAnalyzeImport(source: ProjectImport) {
@@ -1122,6 +1211,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             project={activeProject}
             memory={activeMemory}
             imports={projectImports}
+            dashboard={memoryDashboard!}
             importMode={memoryImportMode}
             importText={importText}
             importType={importType}
@@ -1129,8 +1219,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             pdfExtractionStatus={pdfExtractionStatus}
             pdfExtractionError={pdfExtractionError}
             analysis={projectHistoryAnalysis}
+            consolidatedPreview={consolidatedPreview}
             viewingImport={viewingImport}
             warnings={analysisWarnings}
+            rebuildStatus={rebuildStatus}
+            rebuildWarnings={rebuildWarnings}
+            rebuildBusy={rebuildBusy}
+            lastSavedSourceTitle={lastSavedSourceTitle}
             onImportModeChange={setMemoryImportMode}
             onImportTextChange={setImportText}
             onImportTypeChange={setImportType}
@@ -1139,6 +1234,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             onExtractPdf={extractAndAnalyzePdf}
             onSaveToMemory={saveImportToMemory}
             onSaveSourceOnly={saveImportSourceOnly}
+            onRebuildMemory={rebuildProjectMemoryFromSources}
+            onSaveConsolidatedMemory={saveConsolidatedMemory}
+            onCancelConsolidatedMemory={() => setConsolidatedPreview(null)}
+            onImportAnotherPdf={importAnotherPdf}
+            onCreateDashboardOutcome={() => {
+              if (memoryDashboard?.suggestedNextOutcome) createOutcomeFromImportSuggestion(memoryDashboard.suggestedNextOutcome);
+              else createRecommendedOutcome();
+            }}
             onCreateOutcomeFromSuggestion={createOutcomeFromImportSuggestion}
             onDiscardReview={discardImportReview}
             onViewImport={setViewingImport}
@@ -1398,6 +1501,7 @@ function MemoryTab({
   project,
   memory,
   imports,
+  dashboard,
   importMode,
   importText,
   importType,
@@ -1405,8 +1509,13 @@ function MemoryTab({
   pdfExtractionStatus,
   pdfExtractionError,
   analysis,
+  consolidatedPreview,
   viewingImport,
   warnings,
+  rebuildStatus,
+  rebuildWarnings,
+  rebuildBusy,
+  lastSavedSourceTitle,
   onImportModeChange,
   onImportTextChange,
   onImportTypeChange,
@@ -1415,6 +1524,11 @@ function MemoryTab({
   onExtractPdf,
   onSaveToMemory,
   onSaveSourceOnly,
+  onRebuildMemory,
+  onSaveConsolidatedMemory,
+  onCancelConsolidatedMemory,
+  onImportAnotherPdf,
+  onCreateDashboardOutcome,
   onCreateOutcomeFromSuggestion,
   onDiscardReview,
   onViewImport,
@@ -1424,6 +1538,7 @@ function MemoryTab({
   project: Project;
   memory: Memory;
   imports: ProjectImport[];
+  dashboard: ConsolidatedProjectMemory;
   importMode: MemoryImportMode;
   importText: string;
   importType: MemoryInputType;
@@ -1431,8 +1546,13 @@ function MemoryTab({
   pdfExtractionStatus: string;
   pdfExtractionError: string;
   analysis: ProjectHistoryAnalysis | null;
+  consolidatedPreview: ConsolidatedProjectMemory | null;
   viewingImport: ProjectImport | null;
   warnings: string[];
+  rebuildStatus: string;
+  rebuildWarnings: string[];
+  rebuildBusy: boolean;
+  lastSavedSourceTitle: string;
   onImportModeChange: (value: MemoryImportMode) => void;
   onImportTextChange: (value: string) => void;
   onImportTypeChange: (value: MemoryInputType) => void;
@@ -1441,15 +1561,52 @@ function MemoryTab({
   onExtractPdf: () => void;
   onSaveToMemory: (updateProductSummary?: boolean) => void;
   onSaveSourceOnly: () => void;
+  onRebuildMemory: () => void;
+  onSaveConsolidatedMemory: () => void;
+  onCancelConsolidatedMemory: () => void;
+  onImportAnotherPdf: () => void;
+  onCreateDashboardOutcome: () => void;
   onCreateOutcomeFromSuggestion: (suggestion: SuggestedOutcome) => void;
   onDiscardReview: () => void;
   onViewImport: (source: ProjectImport | null) => void;
   onReAnalyzeImport: (source: ProjectImport) => void;
   onMemoryChange: (patch: Partial<Memory>) => void;
 }) {
+  const [editingField, setEditingField] = useState<LegacyMemoryFieldKey | null>(null);
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
-      <div className="flex flex-col gap-5">
+    <div className="space-y-5">
+      <ProjectRoadmapDashboard
+        project={project}
+        dashboard={dashboard}
+        targetUsers={memory.targetUsers}
+        sourceCount={imports.length}
+        onRebuildMemory={onRebuildMemory}
+        onCreateOutcome={onCreateDashboardOutcome}
+        rebuildBusy={rebuildBusy}
+      />
+
+      {consolidatedPreview ? (
+        <ConsolidatedMemoryPreview
+          dashboard={consolidatedPreview}
+          warnings={rebuildWarnings}
+          onSave={onSaveConsolidatedMemory}
+          onCancel={onCancelConsolidatedMemory}
+        />
+      ) : null}
+
+      {lastSavedSourceTitle ? (
+        <NextMemoryActions
+          sourceTitle={lastSavedSourceTitle}
+          onImportAnotherPdf={onImportAnotherPdf}
+          onRebuildMemory={onRebuildMemory}
+          onCreateOutcome={onCreateDashboardOutcome}
+          rebuildBusy={rebuildBusy}
+        />
+      ) : null}
+
+      <div className="grid gap-5 lg:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+        <div className="flex flex-col gap-5">
         <Panel>
           <PanelBody>
             <SectionHeader title="Import Project History" eyebrow="Memory" />
@@ -1539,6 +1696,9 @@ function MemoryTab({
                 ))}
               </div>
             ) : null}
+            {rebuildStatus ? (
+              <p className="mt-3 text-sm leading-6 text-slateText">{rebuildStatus}</p>
+            ) : null}
           </PanelBody>
         </Panel>
 
@@ -1557,25 +1717,361 @@ function MemoryTab({
         <ImportsPanel
           imports={imports}
           viewingImport={viewingImport}
+          onRebuildMemory={onRebuildMemory}
+          rebuildBusy={rebuildBusy}
           onViewImport={onViewImport}
           onReAnalyzeImport={onReAnalyzeImport}
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {memoryFields.map((field) => (
-          <Panel key={field.key}>
-            <PanelBody>
-              <FieldLabel>{field.title}</FieldLabel>
-              <TextArea
-                className="mt-3 min-h-44"
-                value={memory[field.key]}
-                onChange={(event) => onMemoryChange({ [field.key]: event.target.value })}
-              />
-            </PanelBody>
-          </Panel>
-        ))}
+        <MemoryReadCards
+          memory={memory}
+          editingField={editingField}
+          onEdit={setEditingField}
+          onMemoryChange={onMemoryChange}
+        />
       </div>
+    </div>
+  );
+}
+
+function ProjectRoadmapDashboard({
+  project,
+  dashboard,
+  targetUsers,
+  sourceCount,
+  onRebuildMemory,
+  onCreateOutcome,
+  rebuildBusy,
+}: {
+  project: Project;
+  dashboard: ConsolidatedProjectMemory;
+  targetUsers: string;
+  sourceCount: number;
+  onRebuildMemory: () => void;
+  onCreateOutcome: () => void;
+  rebuildBusy: boolean;
+}) {
+  const suggested = dashboard.suggestedNextOutcome;
+
+  return (
+    <Panel>
+      <PanelBody>
+        <SectionHeader
+          title="Project Roadmap Dashboard"
+          eyebrow="Founder Memory"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={onRebuildMemory} disabled={!sourceCount || rebuildBusy}>
+                <Wand2 className="h-4 w-4" />
+                {rebuildBusy ? "Rebuilding" : "Rebuild Project Memory from Sources"}
+              </Button>
+              <Button variant="primary" onClick={onCreateOutcome}>
+                <Plus className="h-4 w-4" />
+                Create next outcome
+              </Button>
+            </div>
+          }
+        />
+
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <AnalyzerBadge value={dashboard.analyzer} />
+            <span className="font-mono text-xs font-semibold text-blue-700">
+              {sourceCount} saved source{sourceCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-blue-900">
+            {dashboard.plainEnglishSummary || "Import project history PDFs to build one clear, founder-friendly memory dashboard."}
+          </p>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+          <div className="space-y-4">
+            <div className="rounded-lg border border-line bg-white p-4">
+              <FieldLabel>Product Snapshot</FieldLabel>
+              <p className="mt-3 text-sm leading-6 text-slateText">
+                {dashboard.productSnapshot || project.description || "No product snapshot yet. Import sources to build one."}
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <SnapshotLine label="Who it is for" value={targetUsers || "Target users are not clear yet."} />
+                <SnapshotLine
+                  label="Current goal / next outcome"
+                  value={suggested?.title || dashboard.whatToDoNext[0] || "Choose the next verified outcome."}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <DashboardListSection title="What is Done" items={dashboard.whatIsDone} />
+              <DashboardListSection title="What is Broken / Risky" items={dashboard.whatIsBrokenOrRisky} tone="risk" />
+              <DashboardListSection title="What To Do Next" items={dashboard.whatToDoNext} tone="next" />
+            </div>
+
+            <div className="rounded-lg border border-line bg-white p-4">
+              <FieldLabel>Roadmap</FieldLabel>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <DashboardListSection title="Now" items={dashboard.roadmapNow} compact />
+                <DashboardListSection title="Next" items={dashboard.roadmapNext} compact />
+                <DashboardListSection title="Later" items={dashboard.roadmapLater} compact />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <FieldLabel>Suggested Next Outcome</FieldLabel>
+              <p className="mt-3 text-lg font-semibold text-ink">{suggested?.title || "No suggested outcome yet"}</p>
+              <p className="mt-2 text-sm leading-6 text-slateText">
+                {suggested?.goal || "Import or rebuild sources to generate a focused next outcome."}
+              </p>
+              {suggested?.acceptanceCriteria.length ? (
+                <div className="mt-4">
+                  <p className="mb-2 font-mono text-xs font-semibold uppercase text-blue-700">Acceptance checks</p>
+                  <SimpleBulletList items={suggested.acceptanceCriteria} />
+                </div>
+              ) : null}
+              <div className="mt-4 rounded-md border border-blue-200 bg-white p-3 font-mono text-xs leading-5 text-slate-600">
+                {(suggested?.verificationCommands.length ? suggested.verificationCommands : project.verificationCommands).join("\n")}
+              </div>
+            </div>
+
+            <details className="rounded-lg border border-line bg-white p-4">
+              <summary className="cursor-pointer font-mono text-xs font-semibold uppercase text-electric">
+                Technical Details
+              </summary>
+              <div className="mt-3">
+                <SimpleBulletList items={dashboard.technicalDetails} empty="No important technical details have been consolidated yet." />
+              </div>
+            </details>
+
+            <DashboardListSection title="Open Questions" items={dashboard.openQuestions} />
+          </div>
+        </div>
+      </PanelBody>
+    </Panel>
+  );
+}
+
+function ConsolidatedMemoryPreview({
+  dashboard,
+  warnings,
+  onSave,
+  onCancel,
+}: {
+  dashboard: ConsolidatedProjectMemory;
+  warnings: string[];
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Panel>
+      <PanelBody>
+        <SectionHeader
+          title="Consolidated Memory Preview"
+          eyebrow="Review"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button variant="ghost" onClick={onCancel}>
+                <X className="h-4 w-4" />
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={onSave}>
+                <CheckCircle2 className="h-4 w-4" />
+                Save Consolidated Memory
+              </Button>
+            </div>
+          }
+        />
+        {warnings.length ? (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
+            {warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </div>
+        ) : null}
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <DashboardListSection title="What is Done" items={dashboard.whatIsDone} />
+          <DashboardListSection title="What is Broken / Risky" items={dashboard.whatIsBrokenOrRisky} tone="risk" />
+          <DashboardListSection title="What To Do Next" items={dashboard.whatToDoNext} tone="next" />
+          <DashboardListSection title="Roadmap Now" items={dashboard.roadmapNow} />
+        </div>
+        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <FieldLabel>Suggested Next Outcome</FieldLabel>
+          <p className="mt-2 font-semibold text-ink">{dashboard.suggestedNextOutcome?.title || "No suggested outcome"}</p>
+          <p className="mt-1 text-sm leading-6 text-slateText">{dashboard.suggestedNextOutcome?.goal || dashboard.plainEnglishSummary}</p>
+        </div>
+      </PanelBody>
+    </Panel>
+  );
+}
+
+function NextMemoryActions({
+  sourceTitle,
+  onImportAnotherPdf,
+  onRebuildMemory,
+  onCreateOutcome,
+  rebuildBusy,
+}: {
+  sourceTitle: string;
+  onImportAnotherPdf: () => void;
+  onRebuildMemory: () => void;
+  onCreateOutcome: () => void;
+  rebuildBusy: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <p className="text-sm leading-6 text-blue-900">
+          Saved <span className="font-semibold">{sourceTitle}</span>. You can keep importing chats, rebuild one clean project memory, or turn the next step into an outcome.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onImportAnotherPdf}>
+            <Upload className="h-4 w-4" />
+            Import another PDF
+          </Button>
+          <Button onClick={onRebuildMemory} disabled={rebuildBusy}>
+            <Wand2 className="h-4 w-4" />
+            Rebuild Project Memory
+          </Button>
+          <Button variant="primary" onClick={onCreateOutcome}>
+            <Plus className="h-4 w-4" />
+            Create next outcome
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemoryReadCards({
+  memory,
+  editingField,
+  onEdit,
+  onMemoryChange,
+}: {
+  memory: Memory;
+  editingField: LegacyMemoryFieldKey | null;
+  onEdit: (field: LegacyMemoryFieldKey | null) => void;
+  onMemoryChange: (patch: Partial<Memory>) => void;
+}) {
+  const cards = getVisibleMemoryCards(memory);
+
+  if (!cards.length) {
+    return (
+      <Panel>
+        <PanelBody>
+          <EmptyState title="No memory cards yet" detail="Import project history to build the roadmap dashboard before editing memory manually." />
+        </PanelBody>
+      </Panel>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      {cards.map((card) => (
+        <div key={card.key} className="rounded-lg border border-line bg-white p-4">
+          {card.collapsed && editingField !== card.key ? (
+            <details>
+              <summary className="cursor-pointer font-mono text-xs font-semibold uppercase text-electric">{card.title}</summary>
+              <div className="mt-3 flex justify-end">
+                <Button variant="ghost" onClick={() => onEdit(card.key)}>
+                  Edit
+                </Button>
+              </div>
+              <MemoryReadCardBody card={card} editingField={editingField} onEdit={onEdit} onMemoryChange={onMemoryChange} />
+            </details>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <FieldLabel>{card.title}</FieldLabel>
+                <Button variant="ghost" onClick={() => onEdit(editingField === card.key ? null : card.key)}>
+                  {editingField === card.key ? "Done" : "Edit"}
+                </Button>
+              </div>
+              <MemoryReadCardBody card={card} editingField={editingField} onEdit={onEdit} onMemoryChange={onMemoryChange} />
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MemoryReadCardBody({
+  card,
+  editingField,
+  onEdit,
+  onMemoryChange,
+}: {
+  card: ReturnType<typeof getVisibleMemoryCards>[number];
+  editingField: LegacyMemoryFieldKey | null;
+  onEdit: (field: LegacyMemoryFieldKey | null) => void;
+  onMemoryChange: (patch: Partial<Memory>) => void;
+}) {
+  if (editingField === card.key) {
+    return (
+      <div className="mt-3">
+        <TextArea
+          className="min-h-44"
+          value={card.value}
+          onChange={(event) => onMemoryChange({ [card.key]: event.target.value })}
+        />
+        <Button className="mt-3" onClick={() => onEdit(null)}>
+          <CheckCircle2 className="h-4 w-4" />
+          Done
+        </Button>
+      </div>
+    );
+  }
+
+  return <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slateText">{card.value}</p>;
+}
+
+function DashboardListSection({
+  title,
+  items,
+  tone = "default",
+  compact = false,
+}: {
+  title: string;
+  items: string[];
+  tone?: "default" | "risk" | "next";
+  compact?: boolean;
+}) {
+  const toneClass =
+    tone === "risk"
+      ? "border-rose-200 bg-rose-50"
+      : tone === "next"
+        ? "border-blue-200 bg-blue-50"
+        : "border-line bg-white";
+  return (
+    <div className={cx("rounded-lg border p-4", toneClass, compact && "p-3")}>
+      <p className="mb-3 font-mono text-xs font-semibold uppercase text-electric">{title}</p>
+      <SimpleBulletList items={items} />
+    </div>
+  );
+}
+
+function SimpleBulletList({ items, empty = "No strong signal detected yet." }: { items: string[]; empty?: string }) {
+  if (!items.length) return <p className="text-sm leading-6 text-slate-500">{empty}</p>;
+  return (
+    <ul className="space-y-2 text-sm leading-6 text-slateText">
+      {items.map((item) => (
+        <li key={item} className="flex gap-2">
+          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-electric" />
+          <span>{item.replace(/^[-*]\s*/, "")}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SnapshotLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-line bg-mist p-3">
+      <p className="font-mono text-xs font-semibold uppercase text-electric">{label}</p>
+      <p className="mt-2 text-sm leading-6 text-slateText">{value}</p>
     </div>
   );
 }
@@ -1880,18 +2376,31 @@ function ImportMetaLine({ label, value }: { label: string; value: string }) {
 function ImportsPanel({
   imports,
   viewingImport,
+  onRebuildMemory,
+  rebuildBusy,
   onViewImport,
   onReAnalyzeImport,
 }: {
   imports: ProjectImport[];
   viewingImport: ProjectImport | null;
+  onRebuildMemory: () => void;
+  rebuildBusy: boolean;
   onViewImport: (source: ProjectImport | null) => void;
   onReAnalyzeImport: (source: ProjectImport) => void;
 }) {
   return (
     <Panel>
       <PanelBody>
-        <SectionHeader title="Imports" eyebrow="Sources" />
+        <SectionHeader
+          title="Sources"
+          eyebrow="Imports"
+          action={
+            <Button onClick={onRebuildMemory} disabled={!imports.length || rebuildBusy}>
+              <Wand2 className="h-4 w-4" />
+              Rebuild Project Memory
+            </Button>
+          }
+        />
         {imports.length ? (
           <div className="space-y-3">
             {imports.slice(0, 8).map((source) => (
@@ -1900,10 +2409,14 @@ function ImportsPanel({
                   <div>
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <SourceBadge value={source.sourceType} />
+                      <AnalyzerBadge value={source.analyzer} />
                       <p className="font-medium text-ink">{source.title}</p>
                     </div>
                     <p className="text-sm text-slate-500">
                       {source.fileName || "Text paste"} · {new Date(source.createdAt).toLocaleString()}
+                    </p>
+                    <p className="mt-2 line-clamp-3 text-sm leading-6 text-slateText">
+                      {source.plainEnglishSummary || source.analysisSummary || "Source saved for future memory rebuilds."}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">

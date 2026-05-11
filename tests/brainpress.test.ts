@@ -9,16 +9,20 @@ import {
 import {
   analyzeMemoryInput,
   analyzeProjectHistory,
+  buildConsolidatedProjectMemory,
   createProjectImport,
   dedupe,
   generateAgentPrompt,
+  getVisibleMemoryCards,
   ingestAgentResult,
+  memoryFromConsolidatedProjectMemory,
   mergeMemoryWithProjectHistory,
   pdfTextExtractionFailureMessage,
 } from "../src/lib/brainpress";
 import {
   analyzeProjectHistoryWithOptionalOpenAI,
   maxOpenAIInputCharacters,
+  rebuildProjectMemoryWithOptionalOpenAI,
   requestOpenAIMemoryAnalysis,
 } from "../src/lib/ai/openai-memory-analyzer";
 import {
@@ -919,6 +923,230 @@ test("suggested outcomes are generated from imported content", () => {
   assert.ok(analysis.suggestedOutcomes.length >= 3);
   assert.match(analysis.suggestedOutcomes.map((outcome) => outcome.title).join("\n"), /dashboard empty states|last 7 days|known issues/i);
   assert.deepEqual(analysis.suggestedOutcomes[0].verificationCommands, seedProject.verificationCommands);
+});
+
+test("multiple PDF sources consolidate into one roadmap dashboard", () => {
+  const older = analyzeProjectHistory("Completed: added PDF extraction.\nNext add local memory cards.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Older chat",
+    fileName: "older.pdf",
+    pageCount: 2,
+  }).source;
+  const newer = analyzeProjectHistory("Completed: added PDF extraction.\nIssue: build route is broken.\nNext rebuild project memory from all sources.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Newer chat",
+    fileName: "newer.pdf",
+    pageCount: 3,
+  }).source;
+  const sources = [
+    { ...older, createdAt: "2026-05-10T00:00:00.000Z" },
+    { ...newer, createdAt: "2026-05-11T00:00:00.000Z" },
+  ];
+
+  const dashboard = buildConsolidatedProjectMemory(seedProject, seedMemory, sources);
+
+  assert.equal(dashboard.sourceCount, 2);
+  assert.deepEqual(dashboard.sourceIds, [newer.id, older.id]);
+  assert.equal(dashboard.whatIsDone.filter((item) => /PDF extraction/i.test(item)).length, 1);
+  assert.match(dashboard.whatIsBrokenOrRisky.join("\n"), /build route is broken/i);
+  assert.match(dashboard.whatToDoNext[0], /matters because/i);
+  assert.match(dashboard.roadmapNow.join("\n"), /rebuild project memory|build route/i);
+});
+
+test("saving a new PDF can merge memory and preserve raw source separately", () => {
+  const first = analyzeProjectHistory("Completed: added source list.\nNext add roadmap dashboard.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "First PDF",
+    fileName: "first.pdf",
+    pageCount: 1,
+  });
+  const second = analyzeProjectHistory("Completed: added source list.\nIssue: source list repeats source list.\nNext add roadmap dashboard.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Second PDF",
+    fileName: "second.pdf",
+    pageCount: 1,
+  });
+  const mergedOnce = mergeMemoryWithProjectHistory(seedMemory, first);
+  const mergedTwice = mergeMemoryWithProjectHistory(mergedOnce, second);
+  const dashboard = buildConsolidatedProjectMemory(seedProject, mergedTwice, [first.source, second.source]);
+  const consolidatedMemory = memoryFromConsolidatedProjectMemory(mergedTwice, dashboard);
+
+  assert.equal([first.source, second.source].every((source) => source.extractedText.length > 0), true);
+  assert.equal(dashboard.whatIsDone.filter((item) => /source list/i.test(item)).length, 1);
+  assert.ok(consolidatedMemory.consolidated);
+  assert.match(consolidatedMemory.roadmap, /roadmap dashboard/i);
+});
+
+test("newer source is preferred for current roadmap ordering", () => {
+  const older = createProjectImport({
+    project: seedProject,
+    sourceType: "PDF",
+    title: "Older",
+    fileName: "older.pdf",
+    extractedText: "Next add old onboarding page.",
+    memorySections: {
+      productSummary: "",
+      currentBuildState: "",
+      technicalArchitecture: [],
+      activeDecisions: [],
+      completedWork: [],
+      knownIssues: [],
+      openQuestions: [],
+      roadmap: ["Add old onboarding page."],
+    },
+  });
+  const newer = {
+    ...createProjectImport({
+      project: seedProject,
+      sourceType: "PDF",
+      title: "Newer",
+      fileName: "newer.pdf",
+      extractedText: "Next fix production deploy.",
+      memorySections: {
+        productSummary: "",
+        currentBuildState: "",
+        technicalArchitecture: [],
+        activeDecisions: [],
+        completedWork: [],
+        knownIssues: [],
+        openQuestions: [],
+        roadmap: ["Fix production deploy."],
+      },
+    }),
+    createdAt: "2026-05-11T00:00:00.000Z",
+  };
+  const olderDated = { ...older, createdAt: "2026-05-10T00:00:00.000Z" };
+
+  const dashboard = buildConsolidatedProjectMemory(seedProject, seedMemory, [olderDated, newer]);
+
+  assert.match(dashboard.whatToDoNext[0], /Fix production deploy/i);
+});
+
+test("empty memory cards are hidden and technical details are collapsed by default", () => {
+  const cards = getVisibleMemoryCards({
+    projectId: seedProject.id,
+    productSummary: "Clear product summary.",
+    vision: "",
+    targetUsers: "",
+    currentBuildState: "",
+    technicalArchitecture: "- Next.js App Router.",
+    activeDecisions: "",
+    deprecatedIdeas: "",
+    completedWork: "",
+    openQuestions: "",
+    knownIssues: "",
+    roadmap: "",
+  });
+
+  assert.deepEqual(cards.map((card) => card.key), ["productSummary", "technicalArchitecture"]);
+  assert.equal(cards.find((card) => card.key === "technicalArchitecture")?.collapsed, true);
+  assert.equal(cards.some((card) => card.key === "deprecatedIdeas"), false);
+});
+
+test("Rebuild Project Memory uses all saved sources with mocked OpenAI", async () => {
+  let requestBody = "";
+  const sources = ["alpha.pdf", "beta.pdf"].map((fileName, index) => ({
+    ...analyzeProjectHistory(`Completed: source ${index} done.\nNext improve ${fileName}.`, {
+      project: seedProject,
+      currentMemory: seedMemory,
+      sourceType: "PDF",
+      title: fileName,
+      fileName,
+      pageCount: 1,
+    }).source,
+    createdAt: `2026-05-1${index}T00:00:00.000Z`,
+  }));
+  const fetcher: typeof fetch = async (_url, init) => {
+    requestBody = String(init?.body || "");
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          productSnapshot: "Brainpress turns many project chats into one clear roadmap.",
+          plainEnglishSummary: "The project has two imported source PDFs and a clear next roadmap step.",
+          whatIsDone: ["Source alpha is captured.", "Source beta is captured."],
+          whatIsBrokenOrRisky: ["The roadmap is spread across chats."],
+          whatToDoNext: ["Create a consolidated memory dashboard because founders need one current view."],
+          roadmapNow: ["Create a consolidated memory dashboard."],
+          roadmapNext: ["Turn the dashboard into a next outcome."],
+          roadmapLater: ["Add OCR later."],
+          suggestedNextOutcome: {
+            title: "Create consolidated memory dashboard",
+            description: "Show one current project roadmap from all saved sources.",
+            acceptanceChecks: ["All sources are represented.", "Raw text remains separate."],
+          },
+          technicalDetails: ["Use localStorage-compatible source records."],
+          openQuestions: [],
+        }),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+
+  const result = await rebuildProjectMemoryWithOptionalOpenAI(
+    { project: seedProject, currentMemory: seedMemory, sources },
+    { env: { OPENAI_API_KEY: "sk-test" }, fetcher },
+  );
+
+  assert.equal(result.analyzer, "AI");
+  assert.match(requestBody, /alpha\.pdf/i);
+  assert.match(requestBody, /beta\.pdf/i);
+  assert.equal(result.consolidated.sourceCount, 2);
+  assert.match(result.memory.productSummary, /many project chats/i);
+});
+
+test("Rebuild Project Memory falls back when OPENAI_API_KEY is missing", async () => {
+  const source = analyzeProjectHistory("Issue: memory is scattered.\nNext rebuild project memory.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Scattered PDF",
+    fileName: "scattered.pdf",
+    pageCount: 1,
+  }).source;
+
+  const result = await rebuildProjectMemoryWithOptionalOpenAI(
+    { project: seedProject, currentMemory: seedMemory, sources: [source] },
+    { env: { OPENAI_API_KEY: "" } },
+  );
+
+  assert.equal(result.analyzer, "AIUnavailable");
+  assert.match(result.warnings.join("\n"), /OPENAI_API_KEY/i);
+  assert.match(result.consolidated.whatIsBrokenOrRisky.join("\n"), /memory is scattered/i);
+  assert.match(source.extractedText, /memory is scattered/i);
+});
+
+test("Rebuild Project Memory falls back when AI consolidation JSON is invalid", async () => {
+  const source = analyzeProjectHistory("Issue: duplicate roadmap is confusing.\nNext rebuild one dashboard.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Invalid rebuild PDF",
+    fileName: "invalid-rebuild.pdf",
+    pageCount: 1,
+  }).source;
+  const fetcher: typeof fetch = async () =>
+    new Response(JSON.stringify({ output_text: JSON.stringify({ productSnapshot: 42 }) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const result = await rebuildProjectMemoryWithOptionalOpenAI(
+    { project: seedProject, currentMemory: seedMemory, sources: [source] },
+    { env: { OPENAI_API_KEY: "sk-test" }, fetcher },
+  );
+
+  assert.equal(result.analyzer, "AIUnavailable");
+  assert.match(result.warnings.join("\n"), /invalid JSON/i);
+  assert.match(result.consolidated.whatIsBrokenOrRisky.join("\n"), /duplicate roadmap/i);
+  assert.match(source.extractedText, /duplicate roadmap is confusing/i);
 });
 
 test("PDF scanned or image-only failure message is founder-friendly", () => {

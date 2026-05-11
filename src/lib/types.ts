@@ -71,6 +71,7 @@ export interface Memory {
   openQuestions: string;
   knownIssues: string;
   roadmap: string;
+  consolidated?: ConsolidatedProjectMemory;
 }
 
 export interface Outcome {
@@ -186,6 +187,24 @@ export interface SuggestedOutcome {
   acceptanceCriteria: string[];
   constraints: string[];
   verificationCommands: string[];
+}
+
+export interface ConsolidatedProjectMemory {
+  productSnapshot: string;
+  plainEnglishSummary: string;
+  whatIsDone: string[];
+  whatIsBrokenOrRisky: string[];
+  whatToDoNext: string[];
+  roadmapNow: string[];
+  roadmapNext: string[];
+  roadmapLater: string[];
+  suggestedNextOutcome: SuggestedOutcome | null;
+  technicalDetails: string[];
+  openQuestions: string[];
+  sourceIds: string[];
+  sourceCount: number;
+  analyzer: ProjectHistoryAnalyzer;
+  updatedAt: string;
 }
 
 export interface ProjectImportMemorySections {

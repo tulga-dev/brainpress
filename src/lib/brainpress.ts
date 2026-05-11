@@ -1,5 +1,6 @@
 import type {
   BuildLog,
+  ConsolidatedProjectMemory,
   ExtractedPage,
   Memory,
   MemoryAnalysis,
@@ -46,6 +47,15 @@ const technicalTerms = [
   "state",
   "test",
 ];
+
+export type LegacyMemoryFieldKey = Exclude<keyof Memory, "projectId" | "consolidated">;
+
+export interface VisibleMemoryCard {
+  key: LegacyMemoryFieldKey;
+  title: string;
+  value: string;
+  collapsed: boolean;
+}
 
 export interface ProjectHistoryMetadata {
   project: Project;
@@ -326,6 +336,118 @@ export function createProjectImport({
   };
 }
 
+export function buildConsolidatedProjectMemory(
+  project: Project,
+  memory: Memory,
+  sources: ProjectImport[],
+  options: { analyzer?: ProjectImport["analyzer"]; now?: string } = {},
+): ConsolidatedProjectMemory {
+  const projectSources = sources
+    .filter((source) => source.projectId === project.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const sourceIds = projectSources.map((source) => source.id);
+  const sourceCount = projectSources.length;
+  const latestProductSummary = projectSources.find((source) => source.memorySections.productSummary.trim())?.memorySections.productSummary;
+  const productSnapshot = firstUsefulText([
+    memory.consolidated?.productSnapshot,
+    latestProductSummary,
+    memory.productSummary,
+    projectSummary(project, projectSources.flatMap((source) => source.detectedThemes)),
+  ]);
+
+  const completed = founderFriendlyLines([
+    ...projectSources.flatMap((source) => source.memorySections.completedWork),
+    ...fieldLines(memory.completedWork),
+  ], 8);
+  const broken = founderFriendlyLines([
+    ...projectSources.flatMap((source) => source.memorySections.knownIssues),
+    ...fieldLines(memory.knownIssues),
+  ], 7);
+  const roadmapSignals = founderFriendlyLines([
+    ...projectSources.flatMap((source) => source.memorySections.roadmap),
+    ...fieldLines(memory.roadmap),
+  ], 14);
+  const openQuestions = founderFriendlyLines([
+    ...projectSources.flatMap((source) => source.memorySections.openQuestions),
+    ...fieldLines(memory.openQuestions),
+  ], 8);
+  const technicalDetails = founderFriendlyLines([
+    ...projectSources.flatMap((source) => source.memorySections.technicalArchitecture),
+    ...fieldLines(memory.technicalArchitecture),
+  ], 8);
+  const whatToDoNext = prioritizeNextSteps(roadmapSignals, broken, project).slice(0, 7);
+  const roadmapNow = whatToDoNext.slice(0, 3);
+  const roadmapNext = founderFriendlyLines(roadmapSignals.filter((item) => !roadmapNow.includes(explainWhyItMatters(item))), 4);
+  const roadmapLater = founderFriendlyLines([
+    ...roadmapSignals.slice(roadmapNow.length + roadmapNext.length),
+    ...technicalDetails.filter((item) => /future|later|integration|agent|codex/i.test(item)),
+  ], 4);
+  const suggestedNextOutcome =
+    projectSources.flatMap((source) => source.suggestedOutcomes)[0] ||
+    suggestedOutcomeFromConsolidated(project, memory, whatToDoNext, broken);
+  const plainEnglishSummary = buildConsolidatedPlainEnglishSummary(project, productSnapshot, completed, broken, whatToDoNext, sourceCount);
+
+  return {
+    productSnapshot,
+    plainEnglishSummary,
+    whatIsDone: completed,
+    whatIsBrokenOrRisky: broken,
+    whatToDoNext,
+    roadmapNow,
+    roadmapNext,
+    roadmapLater,
+    suggestedNextOutcome,
+    technicalDetails,
+    openQuestions,
+    sourceIds,
+    sourceCount,
+    analyzer: options.analyzer || (projectSources.some((source) => source.analyzer === "AI") ? "AI" : "Local"),
+    updatedAt: options.now || new Date().toISOString(),
+  };
+}
+
+export function memoryFromConsolidatedProjectMemory(
+  currentMemory: Memory,
+  consolidated: ConsolidatedProjectMemory,
+): Memory {
+  return {
+    ...currentMemory,
+    productSummary: consolidated.productSnapshot || currentMemory.productSummary,
+    currentBuildState: consolidated.plainEnglishSummary || currentMemory.currentBuildState,
+    completedWork: linesToText(consolidated.whatIsDone),
+    knownIssues: linesToText(consolidated.whatIsBrokenOrRisky),
+    roadmap: linesToText([...consolidated.roadmapNow, ...consolidated.roadmapNext, ...consolidated.roadmapLater]),
+    technicalArchitecture: linesToText(consolidated.technicalDetails),
+    openQuestions: linesToText(consolidated.openQuestions),
+    consolidated,
+  };
+}
+
+export function getVisibleMemoryCards(memory: Memory): VisibleMemoryCard[] {
+  const cards: Array<{ key: LegacyMemoryFieldKey; title: string; collapsed?: boolean }> = [
+    { key: "productSummary", title: "Product Summary" },
+    { key: "vision", title: "Vision" },
+    { key: "targetUsers", title: "Target Users" },
+    { key: "currentBuildState", title: "Current Build State" },
+    { key: "technicalArchitecture", title: "Technical Details", collapsed: true },
+    { key: "activeDecisions", title: "Active Decisions" },
+    { key: "deprecatedIdeas", title: "Deprecated Ideas" },
+    { key: "completedWork", title: "Completed Work" },
+    { key: "openQuestions", title: "Open Questions" },
+    { key: "knownIssues", title: "Known Issues" },
+    { key: "roadmap", title: "Roadmap" },
+  ];
+
+  return cards
+    .map((card) => ({
+      key: card.key,
+      title: card.title,
+      value: String(memory[card.key] || "").trim(),
+      collapsed: Boolean(card.collapsed),
+    }))
+    .filter((card) => card.value.length > 0 && (card.key !== "deprecatedIdeas" || card.value.trim().length > 0));
+}
+
 export function mergeMemoryWithProjectHistory(
   currentMemory: Memory,
   analysis: Pick<ProjectHistoryAnalysis, "memory" | "detected" | "analysisSummary" | "memorySections">,
@@ -526,6 +648,115 @@ function buildLocalPlainEnglishSummary(memorySections: ProjectImportMemorySectio
   ].filter(Boolean);
 
   return summary.join(" ") || "Brainpress found source history, but the clearest product signals are limited. Review the structured memory before saving.";
+}
+
+function firstUsefulText(values: Array<string | undefined>) {
+  return values.find((value) => value?.trim())?.trim() || "";
+}
+
+function founderFriendlyLines(lines: string[], limit: number) {
+  return dedupeBySignal(
+    lines
+      .map(cleanFounderMemoryLine)
+      .filter((line) => line.length >= 8 || looksLikeCommandOrPath(line)),
+  ).slice(0, limit);
+}
+
+function cleanFounderMemoryLine(line: string) {
+  return cleanImportLine(line)
+    .replace(/^completed work detected:\s*/i, "")
+    .replace(/^open issues detected:\s*/i, "")
+    .replace(/^next steps detected:\s*/i, "")
+    .replace(/^what is done:\s*/i, "")
+    .replace(/^what is broken or risky:\s*/i, "")
+    .replace(/^what to do next:\s*/i, "")
+    .replace(/^(completed|done|implemented|added|fixed|next|todo|issue|bug|problem|risk)[:\s-]*/i, "")
+    .replace(/\s*[|]\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.;:,]\s*$/, ".");
+}
+
+function dedupeBySignal(lines: string[]) {
+  const seen = new Set<string>();
+  return lines.filter((line) => {
+    const key = normalizeSignalKey(line);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeSignalKey(line: string) {
+  return line
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "[url]")
+    .replace(/[`"'()[\]{}]/g, "")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, "[date]")
+    .replace(/\s+/g, " ")
+    .replace(/[.!?:;,]+$/g, "")
+    .trim();
+}
+
+function prioritizeNextSteps(roadmap: string[], issues: string[], project: Project) {
+  const repairSteps = issues.slice(0, 3).map((issue) => explainWhyItMatters(`Fix ${issue.replace(/^(issue|bug|problem|risk)[:\s-]*/i, "")}`));
+  const roadmapSteps = roadmap.map(explainWhyItMatters);
+  const fallback = explainWhyItMatters(project.primaryGoal || "Define the next verified project outcome");
+  return dedupeBySignal([...roadmapSteps, ...repairSteps, fallback]);
+}
+
+function explainWhyItMatters(step: string) {
+  const cleaned = cleanFounderMemoryLine(step).replace(/[.]\s*$/, "");
+  if (!cleaned) return "";
+  if (/\s-\smatters because\s/i.test(cleaned)) return cleaned;
+  const lower = cleaned.toLowerCase();
+  let reason = "it turns messy project history into a clear, verifiable next step";
+  if (hasAny(lower, ["404", "deploy", "vercel", "production"])) reason = "users need the deployed app to open reliably";
+  else if (hasAny(lower, ["test", "typecheck", "build", "verification"])) reason = "the team needs proof the app still works";
+  else if (hasAny(lower, ["upload", "pdf", "intake", "source"])) reason = "founders need project history to become usable memory";
+  else if (hasAny(lower, ["dashboard", "ui", "screen", "empty state"])) reason = "the product must be clear when someone uses it";
+  else if (hasAny(lower, ["auth", "admin", "password", "security"])) reason = "the workspace needs safe access before real users rely on it";
+  return `${cleaned} - matters because ${reason}.`;
+}
+
+function buildConsolidatedPlainEnglishSummary(
+  project: Project,
+  productSnapshot: string,
+  completed: string[],
+  broken: string[],
+  nextSteps: string[],
+  sourceCount: number,
+) {
+  const sourceText = sourceCount
+    ? `Brainpress combined ${sourceCount} saved source${sourceCount === 1 ? "" : "s"} into this project memory.`
+    : "Brainpress is using the current project memory until sources are imported.";
+  const done = completed[0] ? `Done: ${completed[0]}` : "";
+  const risk = broken[0] ? `Risk: ${broken[0]}` : "";
+  const next = nextSteps[0] ? `Next: ${nextSteps[0]}` : `Next: ${project.primaryGoal}`;
+  return [sourceText, productSnapshot, done, risk, next].filter(Boolean).join(" ");
+}
+
+function suggestedOutcomeFromConsolidated(
+  project: Project,
+  memory: Memory,
+  nextSteps: string[],
+  issues: string[],
+): SuggestedOutcome {
+  const seed = nextSteps[0] || issues[0] || "Clarify the next verified project outcome.";
+  const title = titleFromSignal(seed.replace(/\s-\smatters because.*$/i, ""), "Clarify next project outcome");
+  return {
+    title,
+    goal: `Turn "${title}" into one safe, verifiable implementation outcome.`,
+    acceptanceCriteria: [
+      "The intended user-facing change is clear in plain English.",
+      "Acceptance checks are written before agent handoff.",
+      "Verification commands are represented in the outcome.",
+    ],
+    constraints: dedupe([...project.constraints, ...fieldLines(memory.activeDecisions)]),
+    verificationCommands: project.verificationCommands.length
+      ? project.verificationCommands
+      : ["npm run typecheck", "npm test", "npm run build"],
+  };
 }
 
 function conciseMemoryLines(lines: string[], limit: number) {

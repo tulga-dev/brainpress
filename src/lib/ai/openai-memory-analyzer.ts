@@ -1,12 +1,14 @@
 import {
   analyzeProjectHistory,
+  buildConsolidatedProjectMemory,
   dedupe,
   fieldLines,
   linesToText,
+  memoryFromConsolidatedProjectMemory,
   type ProjectHistoryAnalysis,
   type ProjectHistoryMetadata,
 } from "@/lib/brainpress";
-import type { ProjectImportMemorySections, SuggestedOutcome } from "@/lib/types";
+import type { ConsolidatedProjectMemory, Memory, Project, ProjectImport, ProjectImportMemorySections, SuggestedOutcome } from "@/lib/types";
 
 export interface OpenAIMemoryAnalysis {
   analysisSummary: string;
@@ -28,6 +30,24 @@ export interface OpenAIMemoryAnalysis {
   discardedNoise: string[];
 }
 
+export interface OpenAIConsolidatedMemoryAnalysis {
+  productSnapshot: string;
+  plainEnglishSummary: string;
+  whatIsDone: string[];
+  whatIsBrokenOrRisky: string[];
+  whatToDoNext: string[];
+  roadmapNow: string[];
+  roadmapNext: string[];
+  roadmapLater: string[];
+  suggestedNextOutcome: {
+    title: string;
+    description: string;
+    acceptanceChecks: string[];
+  };
+  technicalDetails: string[];
+  openQuestions: string[];
+}
+
 export interface OpenAIMemoryAnalyzerOptions {
   env?: Partial<NodeJS.ProcessEnv>;
   fetcher?: typeof fetch;
@@ -45,7 +65,15 @@ interface OpenAIMemoryAnalyzerFailure {
 
 type OpenAIMemoryAnalyzerResult = OpenAIMemoryAnalyzerSuccess | OpenAIMemoryAnalyzerFailure;
 
+interface OpenAIConsolidatedMemorySuccess {
+  status: "success";
+  analysis: OpenAIConsolidatedMemoryAnalysis;
+}
+
+type OpenAIConsolidatedMemoryResult = OpenAIConsolidatedMemorySuccess | OpenAIMemoryAnalyzerFailure;
+
 export const maxOpenAIInputCharacters = 60_000;
+export const maxOpenAIConsolidationCharacters = 80_000;
 const defaultOpenAIModel = "gpt-4o-mini";
 
 export const openAIMemoryAnalysisSchema = {
@@ -92,6 +120,46 @@ export const openAIMemoryAnalysisSchema = {
   },
 } as const;
 
+export const openAIConsolidatedMemorySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "productSnapshot",
+    "plainEnglishSummary",
+    "whatIsDone",
+    "whatIsBrokenOrRisky",
+    "whatToDoNext",
+    "roadmapNow",
+    "roadmapNext",
+    "roadmapLater",
+    "suggestedNextOutcome",
+    "technicalDetails",
+    "openQuestions",
+  ],
+  properties: {
+    productSnapshot: { type: "string" },
+    plainEnglishSummary: { type: "string" },
+    whatIsDone: { type: "array", items: { type: "string" } },
+    whatIsBrokenOrRisky: { type: "array", items: { type: "string" } },
+    whatToDoNext: { type: "array", items: { type: "string" } },
+    roadmapNow: { type: "array", items: { type: "string" } },
+    roadmapNext: { type: "array", items: { type: "string" } },
+    roadmapLater: { type: "array", items: { type: "string" } },
+    suggestedNextOutcome: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "description", "acceptanceChecks"],
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        acceptanceChecks: { type: "array", items: { type: "string" } },
+      },
+    },
+    technicalDetails: { type: "array", items: { type: "string" } },
+    openQuestions: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
 export async function analyzeProjectHistoryWithOptionalOpenAI(
   inputText: string,
   metadata: ProjectHistoryMetadata,
@@ -114,6 +182,46 @@ export async function analyzeProjectHistoryWithOptionalOpenAI(
   }
 
   return applyOpenAIMemoryAnalysis(localAnalysis, openAIResult.analysis, metadata);
+}
+
+export async function rebuildProjectMemoryWithOptionalOpenAI(
+  input: {
+    project: Project;
+    currentMemory: Memory;
+    sources: ProjectImport[];
+  },
+  options: OpenAIMemoryAnalyzerOptions = {},
+): Promise<{ consolidated: ConsolidatedProjectMemory; memory: Memory; analyzer: ProjectImport["analyzer"]; warnings: string[] }> {
+  const localConsolidated = buildConsolidatedProjectMemory(input.project, input.currentMemory, input.sources);
+  const openAIResult = await requestOpenAIConsolidatedMemoryAnalysis(input, options);
+
+  if (openAIResult.status !== "success") {
+    const consolidated = {
+      ...localConsolidated,
+      analyzer: "AIUnavailable" as const,
+      updatedAt: new Date().toISOString(),
+    };
+    return {
+      consolidated,
+      memory: memoryFromConsolidatedProjectMemory(input.currentMemory, consolidated),
+      analyzer: "AIUnavailable",
+      warnings: [openAIResult.warning],
+    };
+  }
+
+  const consolidated = applyOpenAIConsolidatedMemoryAnalysis(
+    input.project,
+    input.currentMemory,
+    input.sources,
+    openAIResult.analysis,
+  );
+
+  return {
+    consolidated,
+    memory: memoryFromConsolidatedProjectMemory(input.currentMemory, consolidated),
+    analyzer: "AI",
+    warnings: [],
+  };
 }
 
 export async function requestOpenAIMemoryAnalysis(
@@ -216,6 +324,104 @@ export async function requestOpenAIMemoryAnalysis(
   }
 }
 
+export async function requestOpenAIConsolidatedMemoryAnalysis(
+  input: {
+    project: Project;
+    currentMemory: Memory;
+    sources: ProjectImport[];
+  },
+  options: OpenAIMemoryAnalyzerOptions = {},
+): Promise<OpenAIConsolidatedMemoryResult> {
+  const env = options.env || process.env;
+  const apiKey = env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    return {
+      status: "missing_key",
+      warning: "AI memory rebuild unavailable. Add OPENAI_API_KEY to use this. Local merge used.",
+    };
+  }
+
+  const fetcher = options.fetcher || fetch;
+  const model = env.OPENAI_MEMORY_MODEL?.trim() || defaultOpenAIModel;
+
+  try {
+    const response = await fetcher("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: [
+                  "You are Brainpress, a project-memory consolidator for non-technical founders.",
+                  "Combine many saved PDF/chat sources into one current roadmap dashboard.",
+                  "Return concise JSON only.",
+                  "Write in clear founder language. Separate done work from broken/risky work and planned work.",
+                  "Remove duplicates, transcript fragments, repeated URLs, and low-value technical noise.",
+                  "Do not invent facts. If a fact is unclear or conflicting, put it in openQuestions.",
+                  "Keep technical details short and lower priority. Each whatToDoNext item should explain why it matters.",
+                ].join("\n"),
+              },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: buildOpenAIConsolidatedMemoryPrompt(input),
+              },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "brainpress_consolidated_project_memory",
+            strict: true,
+            schema: openAIConsolidatedMemorySchema,
+          },
+        },
+        max_output_tokens: 3000,
+      }),
+    });
+
+    if (!response.ok) {
+      return {
+        status: "request_failed",
+        warning: `AI memory rebuild request failed (${response.status}). Local merge used.`,
+      };
+    }
+
+    const payload = await response.json();
+    const outputText = extractOpenAIOutputText(payload);
+    const parsed = parseOpenAIConsolidatedJson(outputText);
+    if (!parsed) {
+      return {
+        status: "invalid_response",
+        warning: "AI memory rebuild returned invalid JSON. Local merge used.",
+      };
+    }
+
+    return {
+      status: "success",
+      analysis: parsed,
+    };
+  } catch (error) {
+    return {
+      status: "request_failed",
+      warning: `AI memory rebuild could not complete. Local merge used. ${error instanceof Error ? error.message : ""}`.trim(),
+    };
+  }
+}
+
 export function validateOpenAIMemoryAnalysis(value: unknown): OpenAIMemoryAnalysis | null {
   if (!isRecord(value)) return null;
   const nextRecommendedOutcome = value.nextRecommendedOutcome;
@@ -242,6 +448,36 @@ export function validateOpenAIMemoryAnalysis(value: unknown): OpenAIMemoryAnalys
   };
 
   if (!analysis.analysisSummary || !analysis.plainEnglishSummary || !analysis.productSummary) {
+    return null;
+  }
+
+  return analysis;
+}
+
+export function validateOpenAIConsolidatedMemoryAnalysis(value: unknown): OpenAIConsolidatedMemoryAnalysis | null {
+  if (!isRecord(value)) return null;
+  const suggestedNextOutcome = value.suggestedNextOutcome;
+  if (!isRecord(suggestedNextOutcome)) return null;
+
+  const analysis: OpenAIConsolidatedMemoryAnalysis = {
+    productSnapshot: cleanText(value.productSnapshot),
+    plainEnglishSummary: cleanText(value.plainEnglishSummary),
+    whatIsDone: cleanStringArray(value.whatIsDone, 8),
+    whatIsBrokenOrRisky: cleanStringArray(value.whatIsBrokenOrRisky, 8),
+    whatToDoNext: cleanStringArray(value.whatToDoNext, 7),
+    roadmapNow: cleanStringArray(value.roadmapNow, 4),
+    roadmapNext: cleanStringArray(value.roadmapNext, 4),
+    roadmapLater: cleanStringArray(value.roadmapLater, 4),
+    suggestedNextOutcome: {
+      title: cleanText(suggestedNextOutcome.title),
+      description: cleanText(suggestedNextOutcome.description),
+      acceptanceChecks: cleanStringArray(suggestedNextOutcome.acceptanceChecks, 6),
+    },
+    technicalDetails: cleanStringArray(value.technicalDetails, 8),
+    openQuestions: cleanStringArray(value.openQuestions, 8),
+  };
+
+  if (!analysis.productSnapshot || !analysis.plainEnglishSummary || !analysis.suggestedNextOutcome.title) {
     return null;
   }
 
@@ -317,6 +553,44 @@ export function applyOpenAIMemoryAnalysis(
   };
 }
 
+export function applyOpenAIConsolidatedMemoryAnalysis(
+  project: Project,
+  currentMemory: Memory,
+  sources: ProjectImport[],
+  aiAnalysis: OpenAIConsolidatedMemoryAnalysis,
+): ConsolidatedProjectMemory {
+  const fallback = buildConsolidatedProjectMemory(project, currentMemory, sources);
+  const verificationCommands = project.verificationCommands.length
+    ? project.verificationCommands
+    : ["npm run typecheck", "npm test", "npm run build"];
+  const suggestedNextOutcome: SuggestedOutcome = {
+    title: aiAnalysis.suggestedNextOutcome.title || fallback.suggestedNextOutcome?.title || "Clarify next project outcome",
+    goal: aiAnalysis.suggestedNextOutcome.description || fallback.suggestedNextOutcome?.goal || "Turn the consolidated memory into one clear next outcome.",
+    acceptanceCriteria: aiAnalysis.suggestedNextOutcome.acceptanceChecks.length
+      ? aiAnalysis.suggestedNextOutcome.acceptanceChecks
+      : fallback.suggestedNextOutcome?.acceptanceCriteria || ["Outcome is clear.", "Acceptance checks are explicit."],
+    constraints: dedupe([...project.constraints, ...fieldLines(currentMemory.activeDecisions)]),
+    verificationCommands,
+  };
+
+  return {
+    ...fallback,
+    productSnapshot: aiAnalysis.productSnapshot || fallback.productSnapshot,
+    plainEnglishSummary: aiAnalysis.plainEnglishSummary || fallback.plainEnglishSummary,
+    whatIsDone: aiAnalysis.whatIsDone.length ? aiAnalysis.whatIsDone : fallback.whatIsDone,
+    whatIsBrokenOrRisky: aiAnalysis.whatIsBrokenOrRisky.length ? aiAnalysis.whatIsBrokenOrRisky : fallback.whatIsBrokenOrRisky,
+    whatToDoNext: aiAnalysis.whatToDoNext.length ? aiAnalysis.whatToDoNext : fallback.whatToDoNext,
+    roadmapNow: aiAnalysis.roadmapNow.length ? aiAnalysis.roadmapNow : fallback.roadmapNow,
+    roadmapNext: aiAnalysis.roadmapNext.length ? aiAnalysis.roadmapNext : fallback.roadmapNext,
+    roadmapLater: aiAnalysis.roadmapLater.length ? aiAnalysis.roadmapLater : fallback.roadmapLater,
+    suggestedNextOutcome,
+    technicalDetails: aiAnalysis.technicalDetails.length ? aiAnalysis.technicalDetails : fallback.technicalDetails,
+    openQuestions: aiAnalysis.openQuestions.length ? aiAnalysis.openQuestions : fallback.openQuestions,
+    analyzer: "AI",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function markLocalFallback(localAnalysis: ProjectHistoryAnalysis, warning: string): ProjectHistoryAnalysis {
   return {
     ...localAnalysis,
@@ -354,9 +628,63 @@ function buildOpenAIMemoryPrompt(input: {
   ].join("\n");
 }
 
+function buildOpenAIConsolidatedMemoryPrompt(input: {
+  project: Project;
+  currentMemory: Memory;
+  sources: ProjectImport[];
+}) {
+  const sources = input.sources
+    .filter((source) => source.projectId === input.project.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((source, index) => {
+      const sections = source.memorySections;
+      return [
+        `Source ${index + 1}: ${source.fileName || source.title}`,
+        `Imported: ${source.createdAt}`,
+        `Analyzer: ${source.analyzer}`,
+        `Short summary: ${source.plainEnglishSummary || source.analysisSummary}`,
+        `Key facts: ${source.keyFacts.join("; ")}`,
+        `Done: ${sections.completedWork.join("; ")}`,
+        `Broken or risky: ${sections.knownIssues.join("; ")}`,
+        `Next steps: ${sections.roadmap.join("; ")}`,
+        `Technical details: ${sections.technicalArchitecture.join("; ")}`,
+        `Open questions: ${sections.openQuestions.join("; ")}`,
+        `Raw preview: ${source.extractedText.slice(0, 1_500)}`,
+      ].join("\n");
+    })
+    .join("\n\n---\n\n");
+  const truncatedSources = sources.slice(0, maxOpenAIConsolidationCharacters);
+  const truncationNote =
+    sources.length > truncatedSources.length
+      ? "\n\n[Brainpress note: Source summaries were long, so this rebuild uses the first safe combined chunk. Put uncertainty in openQuestions.]"
+      : "";
+
+  return [
+    `Project: ${input.project.name}`,
+    `Project description: ${input.project.description}`,
+    `Project goal: ${input.project.primaryGoal || "Not provided"}`,
+    `Target users: ${input.currentMemory.targetUsers || "Not provided"}`,
+    `Current memory product summary: ${input.currentMemory.productSummary || "Not provided"}`,
+    `Current memory roadmap: ${fieldLines(input.currentMemory.roadmap).join("; ") || "Not provided"}`,
+    `Verification commands: ${input.project.verificationCommands.join("; ") || "npm run typecheck; npm test; npm run build"}`,
+    "",
+    "Saved sources to consolidate:",
+    truncatedSources,
+    truncationNote,
+  ].join("\n");
+}
+
 function parseOpenAIJson(outputText: string) {
   try {
     return validateOpenAIMemoryAnalysis(JSON.parse(outputText));
+  } catch {
+    return null;
+  }
+}
+
+function parseOpenAIConsolidatedJson(outputText: string) {
+  try {
+    return validateOpenAIConsolidatedMemoryAnalysis(JSON.parse(outputText));
   } catch {
     return null;
   }

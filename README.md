@@ -15,7 +15,7 @@ Project Memory -> Outcome -> Agent Prompt -> Agent Result -> Build Log -> Next O
 - Agent result ingestion into structured build logs.
 - Project settings for repo path, preferred agent, constraints, and verification commands.
 - Founder-safe Permission Safety Rules included in every generated prompt and handoff package.
-- PDF Intake for Project Memory: upload text-based PDFs, extract page text, review concise analyzed memory sections, keep raw source collapsed, save sources, and create suggested outcomes.
+- PDF Intake for Project Memory: upload many text-based PDFs over time, extract page text, save each PDF as a source, rebuild one founder-friendly roadmap dashboard, keep raw source collapsed, and create suggested outcomes.
 
 ## Founder-Safe Permissions
 
@@ -130,6 +130,19 @@ Brainpress can now import project history from the Memory tab through either pas
 
 Supported PDFs are text-based PDFs such as ChatGPT exports, product specs, research memos, investor memos, meeting notes, repo summaries, and saved agent results. Brainpress extracts text page by page in the browser, shows progress like "Extracting page 3 of 18", and then analyzes the extracted text into project memory.
 
+Brainpress now treats imports as **Sources** and memory as the current founder-facing understanding of the project. You can import many ChatGPT/Codex PDFs over time. Each PDF remains saved with file name, import date, analyzer badge, short summary, detected themes, and raw text access. Raw extracted text stays separate from Memory and only appears behind an explicit View text action.
+
+At the top of the Memory tab, Brainpress shows a **Project Roadmap Dashboard**:
+
+- Product Snapshot
+- What is Done
+- What is Broken / Risky
+- What To Do Next
+- Roadmap grouped into Now, Next, and Later
+- Suggested Next Outcome with acceptance checks and safe verification commands
+
+The founder does not need to manually fill database-like boxes. Empty memory cards are hidden, populated memory cards are read-first, each card has an Edit action, and Technical Details are collapsed by default.
+
 PDF analysis can optionally use OpenAI from a server-side route. Add `OPENAI_API_KEY=` to `.env.local` to enable it. The key is read only from `process.env.OPENAI_API_KEY` on the server and is never sent to the browser. If the key is missing, the OpenAI request fails, or the structured JSON is invalid, Brainpress falls back to the local heuristic analyzer and labels the review as "AI unavailable, local analysis used."
 
 PDF analysis produces a review screen with:
@@ -142,6 +155,8 @@ PDF analysis produces a review screen with:
 - options to Save to Memory, Save as Source Only, Generate Outcome from PDF, or Discard
 
 Saving to Memory merges structured analysis into existing memory with deduplication. Decisions, completed work, issues, open questions, roadmap, and architecture are appended. Product Summary is only updated when it is empty, unless the user explicitly chooses to update it. The full raw extracted text remains stored as source history, but it is not pasted into the main import textarea or memory cards.
+
+Use **Rebuild Project Memory from Sources** after importing several PDFs. Brainpress sends source summaries and prior analyses to the optional server-side OpenAI analyzer when `OPENAI_API_KEY` is available, then previews one consolidated memory before replacing the current dashboard. If the key is missing or AI fails, Brainpress falls back to a local merge and explains that AI rebuild is unavailable.
 
 Scanned/image-only PDFs are not supported yet. If text extraction fails, Brainpress tells the user to export as text or upload a text-based PDF. OCR is a future phase.
 

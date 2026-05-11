@@ -2,7 +2,7 @@
 
 ## Purpose
 
-PDF Intake lets founders bring long project history into Brainpress without turning it into another note editor. A text-based PDF can become structured project memory, saved source history, and suggested outcomes.
+PDF Intake lets founders bring long project history into Brainpress without turning it into another note editor. Many text-based PDFs can become saved source history and one clear project roadmap dashboard.
 
 This is a memory feature only. It does not run Codex, run Claude Code, edit repos, deploy, push, or start autonomous loops.
 
@@ -43,6 +43,24 @@ Scanned/image-only PDFs are not supported yet.
 - `memorySections`
 - `suggestedOutcomes`
 - `createdAt`
+
+Each source keeps raw extracted text separate from Memory. The Memory record can also hold an optional consolidated dashboard:
+
+- `productSnapshot`
+- `plainEnglishSummary`
+- `whatIsDone`
+- `whatIsBrokenOrRisky`
+- `whatToDoNext`
+- `roadmapNow`
+- `roadmapNext`
+- `roadmapLater`
+- `suggestedNextOutcome`
+- `technicalDetails`
+- `openQuestions`
+- `sourceIds`
+- `sourceCount`
+- `analyzer`
+- `updatedAt`
 
 ## Extraction Behavior
 
@@ -105,6 +123,27 @@ The user can:
 - Generate Outcome from PDF
 - Discard
 
+After saving, Brainpress offers clear next actions:
+
+- Import another PDF
+- Rebuild Project Memory
+- Create next outcome
+
+This makes multi-PDF workflows explicit: users can keep importing chat exports and then consolidate them when ready.
+
+## Project Roadmap Dashboard
+
+The Memory tab starts with a founder-friendly dashboard instead of empty writable schema boxes:
+
+- Product Snapshot: what the product is, who it is for, and the current goal or next outcome
+- What is Done: completed work from saved sources and memory, deduped
+- What is Broken / Risky: bugs, deployment issues, missing setup, unclear UX, and blockers
+- What To Do Next: 3-7 prioritized next steps, each written in simple language with why it matters
+- Roadmap: Now, Next, and Later
+- Suggested Next Outcome: title, short description, acceptance checks, and Codex-safe verification commands
+
+Detailed technical memory is still available, but it is lower priority and collapsed by default. Empty memory cards are hidden. Populated cards are read-first and only become textareas after the user clicks Edit.
+
 ## Memory Merge Behavior
 
 Saving to memory appends, it does not blindly replace:
@@ -117,9 +156,21 @@ Saving to memory appends, it does not blindly replace:
 - Technical Architecture: append detected architecture lines
 - Product Summary: update only if empty, unless the user explicitly chooses `Save + Update Summary`
 
-Simple deduplication removes repeated imported lines.
+Simple deduplication removes repeated imported lines, repeated commands, URLs, file paths, decisions, issues, and roadmap items where they normalize to the same signal. Newer imports are considered first during dashboard consolidation, so a later chat can move the roadmap or current state forward without deleting useful older facts.
 
 The raw extracted text remains in `ProjectImport.extractedText` and can be viewed from the source history. It is not pasted into the main import textarea and is not saved directly into memory cards.
+
+## Rebuild Project Memory
+
+Use **Rebuild Project Memory from Sources** after importing several PDFs. Brainpress sends source summaries, detected sections, and short raw previews to the server-side analyzer. Raw PDFs remain stored as sources and are not pasted into the dashboard.
+
+If `OPENAI_API_KEY` is available, the OpenAI analyzer creates one consolidated memory preview. The user must review and click Save Consolidated Memory before replacing the current dashboard. If the key is missing, the request fails, or JSON validation fails, Brainpress falls back to a local merge and shows:
+
+```text
+AI memory rebuild unavailable. Add OPENAI_API_KEY to use this.
+```
+
+The local fallback still uses all saved sources, dedupes repeated signals, and preserves raw source text.
 
 ## OpenAI Setup
 
@@ -150,7 +201,8 @@ Suggested outcomes are created as normal Brainpress outcomes with title, goal, a
 - PDF extraction is client-side and depends on readable text embedded in the PDF.
 - Very large PDFs are analyzed with a safe text cap, though extracted text is stored when practical.
 - Source history is localStorage-backed in the MVP.
-- Suggested outcomes are heuristic, not AI-generated.
+- Suggested outcomes are heuristic unless OpenAI analysis is available.
+- Consolidation stores source IDs and source count, but the founder dashboard intentionally avoids cluttering every bullet with source citations.
 
 ## Future OCR Support
 
