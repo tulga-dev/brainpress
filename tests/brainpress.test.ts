@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   canAbsorbAgentRun,
@@ -9,15 +10,20 @@ import {
 import {
   analyzeMemoryInput,
   analyzeProjectHistory,
+  appendProjectImport,
   buildConsolidatedProjectMemory,
   createProjectImport,
+  dashboardHasContent,
   dedupe,
   generateAgentPrompt,
+  getMemoryTabMode,
   getVisibleMemoryCards,
+  hasUsableProjectMemory,
   ingestAgentResult,
   memoryFromConsolidatedProjectMemory,
   mergeMemoryWithProjectHistory,
   pdfTextExtractionFailureMessage,
+  updateProjectImport,
 } from "../src/lib/brainpress";
 import {
   analyzeProjectHistoryWithOptionalOpenAI,
@@ -985,6 +991,141 @@ test("saving a new PDF can merge memory and preserve raw source separately", () 
   assert.match(consolidatedMemory.roadmap, /roadmap dashboard/i);
 });
 
+test("saving first and second PDFs appends separate saved sources", () => {
+  const first = analyzeProjectHistory("Completed: imported first chat.\nDecision: keep first source metadata.\nNext build memory dashboard.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Chat export",
+    fileName: "chat.pdf",
+    pageCount: 1,
+  }).source;
+  const second = analyzeProjectHistory("Completed: imported second chat.\nIssue: previous PDF was replaced.\nNext verify multi source rebuild.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Chat export",
+    fileName: "chat.pdf",
+    pageCount: 2,
+  }).source;
+  const firstSave = appendProjectImport([], first, { now: "2026-05-11T00:00:00.000Z" });
+  const secondSave = appendProjectImport(firstSave.imports, second, { now: "2026-05-11T00:01:00.000Z" });
+
+  assert.equal(secondSave.imports.length, 2);
+  assert.notEqual(secondSave.imports[0].id, secondSave.imports[1].id);
+  assert.equal(secondSave.imports[0].fileName, "chat.pdf");
+  assert.equal(secondSave.imports[1].fileName, "chat.pdf");
+  assert.match(secondSave.imports[0].extractedText, /second chat/i);
+  assert.match(secondSave.imports[1].extractedText, /first chat/i);
+  assert.equal(secondSave.imports[1].title, "Chat export");
+  assert.equal(secondSave.imports[1].analyzer, "Local");
+  assert.match(secondSave.imports[1].plainEnglishSummary, /first chat|project history/i);
+  assert.match(secondSave.imports[1].analysisSummary, /first chat|memory/i);
+  assert.match(secondSave.imports[1].memorySections.activeDecisions.join("\n"), /keep first source metadata/i);
+  assert.match(secondSave.imports[0].memorySections.knownIssues.join("\n"), /previous PDF was replaced/i);
+});
+
+test("Save as Source Only appends a source without changing dashboard memory", () => {
+  const source = analyzeProjectHistory("Completed: saved as source only.\nNext decide whether to merge it.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Source only",
+    fileName: "source-only.pdf",
+    pageCount: 1,
+  }).source;
+  const saved = appendProjectImport([], source);
+
+  assert.equal(saved.imports.length, 1);
+  assert.match(saved.imports[0].plainEnglishSummary, /saved as source only|source history/i);
+  assert.equal(seedMemory.consolidated, undefined);
+});
+
+test("re-analyze updates only the selected saved source", () => {
+  const first = appendProjectImport([], analyzeProjectHistory("Completed: first source stays.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "First",
+    fileName: "first.pdf",
+    pageCount: 1,
+  }).source);
+  const second = appendProjectImport(first.imports, analyzeProjectHistory("Issue: old second source.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Second",
+    fileName: "second.pdf",
+    pageCount: 1,
+  }).source);
+  const targetId = second.imports[0].id;
+  const updatedAnalysis = analyzeProjectHistory("Issue: updated second source only.\nNext rebuild memory.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Second",
+    fileName: "second.pdf",
+    pageCount: 1,
+  }).source;
+  const updated = updateProjectImport(second.imports, targetId, updatedAnalysis);
+
+  assert.equal(updated.imports.length, 2);
+  assert.equal(updated.imports[0].id, targetId);
+  assert.match(updated.imports[0].extractedText, /updated second source only/i);
+  assert.match(updated.imports[1].extractedText, /first source stays/i);
+});
+
+test("saving a re-analyzed source as new source appends instead of replacing original", () => {
+  const original = appendProjectImport([], analyzeProjectHistory("Completed: original PDF remains saved.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Same report",
+    fileName: "same.pdf",
+    pageCount: 1,
+  }).source);
+  const reanalysis = analyzeProjectHistory("Completed: re-analyzed PDF saved as a new source.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Same report",
+    fileName: "same.pdf",
+    pageCount: 1,
+  }).source;
+  const savedAsNew = appendProjectImport(original.imports, reanalysis);
+
+  assert.equal(savedAsNew.imports.length, 2);
+  assert.notEqual(savedAsNew.imports[0].id, original.source.id);
+  assert.equal(savedAsNew.imports[0].fileName, savedAsNew.imports[1].fileName);
+  assert.match(savedAsNew.imports[0].extractedText, /re-analyzed PDF saved as a new source/i);
+  assert.match(savedAsNew.imports[1].extractedText, /original PDF remains saved/i);
+});
+
+test("source count and rebuild use saved sources only, excluding pending review", () => {
+  const saved = appendProjectImport([], analyzeProjectHistory("Completed: saved PDF source.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Saved",
+    fileName: "saved.pdf",
+    pageCount: 1,
+  }).source);
+  const pending = analyzeProjectHistory("Completed: pending PDF source should not count yet.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Pending",
+    fileName: "pending.pdf",
+    pageCount: 1,
+  });
+  const dashboard = buildConsolidatedProjectMemory(seedProject, seedMemory, saved.imports);
+
+  assert.equal(getMemoryTabMode(seedMemory, pending), "review");
+  assert.equal(dashboard.sourceCount, 1);
+  assert.match(dashboard.whatIsDone.join("\n"), /saved PDF source/i);
+  assert.doesNotMatch(dashboard.whatIsDone.join("\n"), /pending PDF source/i);
+});
+
 test("newer source is preferred for current roadmap ordering", () => {
   const older = createProjectImport({
     project: seedProject,
@@ -1049,6 +1190,74 @@ test("empty memory cards are hidden and technical details are collapsed by defau
   assert.deepEqual(cards.map((card) => card.key), ["productSummary", "technicalArchitecture"]);
   assert.equal(cards.find((card) => card.key === "technicalArchitecture")?.collapsed, true);
   assert.equal(cards.some((card) => card.key === "deprecatedIdeas"), false);
+});
+
+test("empty project memory uses empty mode instead of a fake roadmap dashboard", () => {
+  const project = createBlankProject("2026-05-11T00:00:00.000Z");
+  const emptyMemory = {
+    ...seedMemory,
+    projectId: project.id,
+    productSummary: "",
+    vision: "",
+    targetUsers: "",
+    currentBuildState: "",
+    technicalArchitecture: "",
+    activeDecisions: "",
+    deprecatedIdeas: "",
+    completedWork: "",
+    openQuestions: "",
+    knownIssues: "",
+    roadmap: "",
+    consolidated: undefined,
+  };
+  const dashboard = buildConsolidatedProjectMemory(project, emptyMemory, []);
+
+  assert.equal(hasUsableProjectMemory(emptyMemory), false);
+  assert.equal(getMemoryTabMode(emptyMemory, null), "empty");
+  assert.equal(dashboardHasContent(dashboard), false);
+  assert.equal(dashboard.productSnapshot, "");
+  assert.equal(dashboard.plainEnglishSummary, "");
+  assert.equal(dashboard.suggestedNextOutcome, null);
+  assert.doesNotMatch(JSON.stringify(dashboard), /Outcome-managed AI build workspace|Define a clear product outcome/i);
+});
+
+test("unsaved PDF analysis switches Memory tab into review mode and hides the saved dashboard", () => {
+  const analysis = analyzeProjectHistory("Completed: PDF review works.\nNext save this analysis to memory.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Unsaved PDF",
+    fileName: "unsaved.pdf",
+    pageCount: 2,
+  });
+
+  assert.equal(getMemoryTabMode(seedMemory, analysis), "review");
+  assert.ok(analysis.source.extractedText.includes("PDF review works"));
+});
+
+test("saving PDF analysis updates dashboard source count and clears review mode", () => {
+  const analysis = analyzeProjectHistory("Completed: dashboard now uses saved memory.\nIssue: stale default copy appeared.\nNext remove duplicate review surfaces.", {
+    project: seedProject,
+    currentMemory: seedMemory,
+    sourceType: "PDF",
+    title: "Saved PDF",
+    fileName: "saved.pdf",
+    pageCount: 3,
+  });
+  const merged = mergeMemoryWithProjectHistory(seedMemory, analysis);
+  const dashboard = buildConsolidatedProjectMemory(seedProject, merged, [analysis.source]);
+  const savedMemory = memoryFromConsolidatedProjectMemory(merged, dashboard);
+
+  assert.equal(getMemoryTabMode(savedMemory, null), "dashboard");
+  assert.equal(savedMemory.consolidated?.sourceCount, 1);
+  assert.match(savedMemory.consolidated?.whatIsDone.join("\n") || "", /dashboard now uses saved memory/i);
+  assert.match(savedMemory.consolidated?.whatIsBrokenOrRisky.join("\n") || "", /stale default copy/i);
+});
+
+test("Memory UI does not repeat stale filler copy in cards", () => {
+  const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+
+  assert.doesNotMatch(componentSource, /No strong signal detected/);
 });
 
 test("Rebuild Project Memory uses all saved sources with mocked OpenAI", async () => {

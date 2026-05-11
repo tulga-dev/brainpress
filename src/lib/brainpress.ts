@@ -57,6 +57,8 @@ export interface VisibleMemoryCard {
   collapsed: boolean;
 }
 
+export type MemoryTabMode = "empty" | "review" | "dashboard";
+
 export interface ProjectHistoryMetadata {
   project: Project;
   currentMemory: Memory;
@@ -336,6 +338,54 @@ export function createProjectImport({
   };
 }
 
+export function prepareProjectImportForSave(
+  source: ProjectImport,
+  options: { preserveId?: boolean; now?: string } = {},
+): ProjectImport {
+  const createdAt = options.now || new Date().toISOString();
+  return {
+    ...source,
+    id: options.preserveId && source.id ? source.id : uid("import"),
+    createdAt: options.preserveId ? source.createdAt || createdAt : createdAt,
+  };
+}
+
+export function appendProjectImport(
+  imports: ProjectImport[],
+  source: ProjectImport,
+  options: { now?: string } = {},
+) {
+  const savedSource = prepareProjectImportForSave(source, { now: options.now });
+  return {
+    source: savedSource,
+    imports: [savedSource, ...imports],
+  };
+}
+
+export function updateProjectImport(
+  imports: ProjectImport[],
+  sourceId: string,
+  source: ProjectImport,
+  options: { now?: string } = {},
+) {
+  const existing = imports.find((item) => item.id === sourceId);
+  const updatedSource = prepareProjectImportForSave(
+    {
+      ...source,
+      id: sourceId,
+      createdAt: existing?.createdAt || source.createdAt,
+    },
+    { preserveId: true, now: options.now },
+  );
+
+  return {
+    source: updatedSource,
+    imports: imports.some((item) => item.id === sourceId)
+      ? imports.map((item) => (item.id === sourceId ? updatedSource : item))
+      : [updatedSource, ...imports],
+  };
+}
+
 export function buildConsolidatedProjectMemory(
   project: Project,
   memory: Memory,
@@ -348,11 +398,13 @@ export function buildConsolidatedProjectMemory(
   const sourceIds = projectSources.map((source) => source.id);
   const sourceCount = projectSources.length;
   const latestProductSummary = projectSources.find((source) => source.memorySections.productSummary.trim())?.memorySections.productSummary;
+  const hasRealMemory = hasUsableProjectMemory(memory);
+  const hasMemorySignals = sourceCount > 0 || hasRealMemory;
   const productSnapshot = firstUsefulText([
     memory.consolidated?.productSnapshot,
     latestProductSummary,
     memory.productSummary,
-    projectSummary(project, projectSources.flatMap((source) => source.detectedThemes)),
+    hasMemorySignals ? projectSummary(project, projectSources.flatMap((source) => source.detectedThemes)) : "",
   ]);
 
   const completed = founderFriendlyLines([
@@ -375,7 +427,7 @@ export function buildConsolidatedProjectMemory(
     ...projectSources.flatMap((source) => source.memorySections.technicalArchitecture),
     ...fieldLines(memory.technicalArchitecture),
   ], 8);
-  const whatToDoNext = prioritizeNextSteps(roadmapSignals, broken, project).slice(0, 7);
+  const whatToDoNext = hasMemorySignals ? prioritizeNextSteps(roadmapSignals, broken, project).slice(0, 7) : [];
   const roadmapNow = whatToDoNext.slice(0, 3);
   const roadmapNext = founderFriendlyLines(roadmapSignals.filter((item) => !roadmapNow.includes(explainWhyItMatters(item))), 4);
   const roadmapLater = founderFriendlyLines([
@@ -384,8 +436,10 @@ export function buildConsolidatedProjectMemory(
   ], 4);
   const suggestedNextOutcome =
     projectSources.flatMap((source) => source.suggestedOutcomes)[0] ||
-    suggestedOutcomeFromConsolidated(project, memory, whatToDoNext, broken);
-  const plainEnglishSummary = buildConsolidatedPlainEnglishSummary(project, productSnapshot, completed, broken, whatToDoNext, sourceCount);
+    (hasMemorySignals ? suggestedOutcomeFromConsolidated(project, memory, whatToDoNext, broken) : null);
+  const plainEnglishSummary = hasMemorySignals
+    ? buildConsolidatedPlainEnglishSummary(project, productSnapshot, completed, broken, whatToDoNext, sourceCount)
+    : "";
 
   return {
     productSnapshot,
@@ -446,6 +500,45 @@ export function getVisibleMemoryCards(memory: Memory): VisibleMemoryCard[] {
       collapsed: Boolean(card.collapsed),
     }))
     .filter((card) => card.value.length > 0 && (card.key !== "deprecatedIdeas" || card.value.trim().length > 0));
+}
+
+export function hasUsableProjectMemory(memory: Memory): boolean {
+  if (memory.consolidated && dashboardHasContent(memory.consolidated)) return true;
+  return [
+    memory.productSummary,
+    memory.vision,
+    memory.targetUsers,
+    memory.currentBuildState,
+    memory.technicalArchitecture,
+    memory.activeDecisions,
+    memory.deprecatedIdeas,
+    memory.completedWork,
+    memory.openQuestions,
+    memory.knownIssues,
+    memory.roadmap,
+  ].some((value) => String(value || "").trim().length > 12);
+}
+
+export function dashboardHasContent(dashboard: ConsolidatedProjectMemory | null | undefined): dashboard is ConsolidatedProjectMemory {
+  if (!dashboard) return false;
+  return Boolean(
+    dashboard.productSnapshot.trim() ||
+      dashboard.plainEnglishSummary.trim() ||
+      dashboard.whatIsDone.length ||
+      dashboard.whatIsBrokenOrRisky.length ||
+      dashboard.whatToDoNext.length ||
+      dashboard.roadmapNow.length ||
+      dashboard.roadmapNext.length ||
+      dashboard.roadmapLater.length ||
+      dashboard.suggestedNextOutcome ||
+      dashboard.technicalDetails.length ||
+      dashboard.openQuestions.length,
+  );
+}
+
+export function getMemoryTabMode(memory: Memory, analysis: ProjectHistoryAnalysis | null | undefined): MemoryTabMode {
+  if (analysis) return "review";
+  return hasUsableProjectMemory(memory) ? "dashboard" : "empty";
 }
 
 export function mergeMemoryWithProjectHistory(

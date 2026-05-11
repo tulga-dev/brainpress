@@ -54,7 +54,7 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     ),
     agentRuns: (state.agentRuns || []).map((run) => normalizeAgentRun(run, safetyRulesByProject.get(run.projectId))),
     buildLogs: (state.buildLogs || []).map(normalizeBuildLog),
-    imports: (state.imports || []).map(normalizeProjectImport),
+    imports: (state.imports || []).map((source, index) => normalizeProjectImport(source, index)),
   };
 }
 
@@ -164,7 +164,7 @@ function normalizeBuildLog(log: BuildLog): BuildLog {
   };
 }
 
-function normalizeProjectImport(source: ProjectImport): ProjectImport {
+function normalizeProjectImport(source: ProjectImport, index = 0): ProjectImport {
   const memorySections = source.memorySections || {
     productSummary: "",
     currentBuildState: "",
@@ -178,6 +178,7 @@ function normalizeProjectImport(source: ProjectImport): ProjectImport {
 
   return {
     ...source,
+    id: source.id || `import_legacy_${index}_${source.createdAt || "unknown"}`,
     sourceType: source.sourceType || "TextPaste",
     title: source.title || source.fileName || "Imported project history",
     extractedText: source.extractedText || "",
@@ -200,5 +201,6 @@ function normalizeProjectImport(source: ProjectImport): ProjectImport {
       roadmap: memorySections.roadmap || [],
     },
     suggestedOutcomes: source.suggestedOutcomes || [],
+    createdAt: source.createdAt || new Date().toISOString(),
   };
 }

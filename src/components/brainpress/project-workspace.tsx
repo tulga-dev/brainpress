@@ -28,12 +28,16 @@ import { nextTaskForInterruptedRun, type CodexRunEvent, type CodexRunState } fro
 import {
   agentReadiness,
   analyzeProjectHistory,
+  appendProjectImport,
   buildConsolidatedProjectMemory,
+  dashboardHasContent,
   dedupe,
   fieldLines,
   generateAgentPrompt,
   generateOutcomePlan,
   getVisibleMemoryCards,
+  getMemoryTabMode,
+  hasUsableProjectMemory,
   ingestAgentResult,
   linesToText,
   memoryFromConsolidatedProjectMemory,
@@ -43,6 +47,7 @@ import {
   type LegacyMemoryFieldKey,
   memoryCompleteness,
   uid,
+  updateProjectImport,
   verificationReadiness,
 } from "@/lib/brainpress";
 import { extractPdfText, formatFileSize } from "@/lib/pdf-intake";
@@ -86,6 +91,7 @@ import {
 const tabs = ["Overview", "Memory", "Outcomes", "Prompts", "Agent Runs", "Build Logs", "Settings"] as const;
 type Tab = (typeof tabs)[number];
 type MemoryImportMode = "Paste text" | "Upload PDF";
+type ImportSaveMode = "append" | "update";
 const rawSourcePreviewLimit = 1_000;
 const rawSourceExpandedDisplayLimit = 20_000;
 
@@ -128,9 +134,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [importType, setImportType] = useState<MemoryInputType>("Chat history");
   const [importText, setImportText] = useState("");
   const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
+  const [pdfInputVersion, setPdfInputVersion] = useState(0);
   const [pdfExtractionStatus, setPdfExtractionStatus] = useState("");
   const [pdfExtractionError, setPdfExtractionError] = useState("");
   const [projectHistoryAnalysis, setProjectHistoryAnalysis] = useState<ProjectHistoryAnalysis | null>(null);
+  const [reanalyzingSourceId, setReanalyzingSourceId] = useState<string | null>(null);
   const [consolidatedPreview, setConsolidatedPreview] = useState<ConsolidatedProjectMemory | null>(null);
   const [viewingImport, setViewingImport] = useState<ProjectImport | null>(null);
   const [analysisWarnings, setAnalysisWarnings] = useState<string[]>([]);
@@ -178,10 +186,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     () => (state.imports || []).filter((source) => source.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [projectId, state.imports],
   );
-  const memoryDashboard = useMemo(
-    () => project && memory ? memory.consolidated || buildConsolidatedProjectMemory(project, memory, projectImports) : null,
-    [project, memory, projectImports],
-  );
+  const memoryDashboard = useMemo(() => {
+    if (!project || !memory) return null;
+    if (memory.consolidated && dashboardHasContent(memory.consolidated)) return memory.consolidated;
+    if (hasUsableProjectMemory(memory)) return buildConsolidatedProjectMemory(project, memory, projectImports);
+    return null;
+  }, [project, memory, projectImports]);
 
   if (!project || !memory) {
     return (
@@ -262,6 +272,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       title: `${importType} import`,
       inputType: importType,
     });
+    setReanalyzingSourceId(null);
     setAnalysisWarnings(analysis.warnings);
     setProjectHistoryAnalysis(analysis);
     setPdfExtractionError("");
@@ -276,6 +287,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setPdfExtractionError("");
     setPdfExtractionStatus("Preparing PDF extraction");
     setProjectHistoryAnalysis(null);
+    setReanalyzingSourceId(null);
     try {
       const extraction = await extractPdfText(selectedPdfFile, (message) => setPdfExtractionStatus(message));
       setPdfExtractionStatus("Converting PDF into project memory");
@@ -299,50 +311,70 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
   }
 
-  function saveImportToMemory(updateProductSummary = false) {
+  function saveImportToMemory(updateProductSummary = false, saveMode: ImportSaveMode = "append") {
     if (!projectHistoryAnalysis) return;
-    setState((current) => ({
-      ...current,
-      projects: current.projects.map((item) =>
-        item.id === activeProject.id ? { ...item, constraints: projectHistoryAnalysis.projectConstraints } : item,
-      ),
-      memories: {
-        ...current.memories,
-        [activeProject.id]: (() => {
-          const currentMemory = current.memories[activeProject.id];
-          const mergedMemory = mergeMemoryWithProjectHistory(currentMemory, projectHistoryAnalysis, { updateProductSummary });
-          const nextImports = addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source);
-          return {
+    const existingSourceId = saveMode === "update" ? reanalyzingSourceId : null;
+    setState((current) => {
+      const savedImport = existingSourceId
+        ? updateProjectImport(current.imports || [], existingSourceId, projectHistoryAnalysis.source)
+        : appendProjectImport(current.imports || [], projectHistoryAnalysis.source);
+      const currentMemory = current.memories[activeProject.id];
+      const mergedMemory = mergeMemoryWithProjectHistory(currentMemory, projectHistoryAnalysis, { updateProductSummary });
+
+      return {
+        ...current,
+        projects: current.projects.map((item) =>
+          item.id === activeProject.id ? { ...item, constraints: projectHistoryAnalysis.projectConstraints } : item,
+        ),
+        memories: {
+          ...current.memories,
+          [activeProject.id]: {
             ...mergedMemory,
-            consolidated: buildConsolidatedProjectMemory(activeProject, mergedMemory, nextImports),
-          };
-        })(),
-      },
-      imports: addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source),
-    }));
+            consolidated: buildConsolidatedProjectMemory(activeProject, mergedMemory, savedImport.imports),
+          },
+        },
+        imports: savedImport.imports,
+      };
+    });
     setImportText("");
     setSelectedPdfFile(null);
+    setPdfInputVersion((value) => value + 1);
     setLastSavedSourceTitle(projectHistoryAnalysis.source.title);
+    setRebuildStatus(existingSourceId ? "Source updated. Dashboard refreshed." : "Saved to project memory. Dashboard updated.");
+    setAnalysisWarnings([]);
+    setPdfExtractionStatus("");
     setProjectHistoryAnalysis(null);
+    setReanalyzingSourceId(null);
     setConsolidatedPreview(null);
   }
 
-  function saveImportSourceOnly() {
+  function saveImportSourceOnly(saveMode: ImportSaveMode = "append") {
     if (!projectHistoryAnalysis) return;
+    const existingSourceId = saveMode === "update" ? reanalyzingSourceId : null;
     setState((current) => ({
       ...current,
-      imports: addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source),
+      imports: existingSourceId
+        ? updateProjectImport(current.imports || [], existingSourceId, projectHistoryAnalysis.source).imports
+        : appendProjectImport(current.imports || [], projectHistoryAnalysis.source).imports,
     }));
     setLastSavedSourceTitle(projectHistoryAnalysis.source.title);
+    setRebuildStatus(existingSourceId ? "Source updated. Project memory was not changed." : "Source saved. Project memory was not changed.");
+    setAnalysisWarnings([]);
+    setPdfExtractionStatus("");
     setProjectHistoryAnalysis(null);
+    setReanalyzingSourceId(null);
     setConsolidatedPreview(null);
+    setSelectedPdfFile(null);
+    setPdfInputVersion((value) => value + 1);
   }
 
   function discardImportReview() {
     setProjectHistoryAnalysis(null);
     setPdfExtractionError("");
     setPdfExtractionStatus("");
+    setAnalysisWarnings([]);
     setConsolidatedPreview(null);
+    setReanalyzingSourceId(null);
   }
 
   async function rebuildProjectMemoryFromSources() {
@@ -413,9 +445,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   function importAnotherPdf() {
     setMemoryImportMode("Upload PDF");
     setSelectedPdfFile(null);
+    setPdfInputVersion((value) => value + 1);
     setPdfExtractionError("");
     setPdfExtractionStatus("");
     setProjectHistoryAnalysis(null);
+    setReanalyzingSourceId(null);
     setLastSavedSourceTitle("");
   }
 
@@ -434,7 +468,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       ? await analyzeExtractedHistory(source.extractedText, metadata)
       : analyzeProjectHistory(source.extractedText, metadata);
     setProjectHistoryAnalysis({ ...analysis, source: { ...analysis.source, id: source.id, createdAt: source.createdAt } });
+    setReanalyzingSourceId(source.id);
     setAnalysisWarnings(analysis.warnings);
+    setSelectedPdfFile(null);
+    setPdfInputVersion((value) => value + 1);
     setViewingImport(null);
   }
 
@@ -494,9 +531,6 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setState((current) => ({
       ...current,
       outcomes: [nextOutcome, ...current.outcomes],
-      imports: projectHistoryAnalysis
-        ? addProjectImportIfMissing(current.imports || [], projectHistoryAnalysis.source)
-        : current.imports || [],
     }));
     setActiveTab("Outcomes");
   }
@@ -1211,16 +1245,18 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             project={activeProject}
             memory={activeMemory}
             imports={projectImports}
-            dashboard={memoryDashboard!}
+            dashboard={memoryDashboard}
             importMode={memoryImportMode}
             importText={importText}
             importType={importType}
             selectedPdfFile={selectedPdfFile}
+            pdfInputVersion={pdfInputVersion}
             pdfExtractionStatus={pdfExtractionStatus}
             pdfExtractionError={pdfExtractionError}
             analysis={projectHistoryAnalysis}
             consolidatedPreview={consolidatedPreview}
             viewingImport={viewingImport}
+            reanalyzingSource={reanalyzingSourceId ? projectImports.find((source) => source.id === reanalyzingSourceId) || null : null}
             warnings={analysisWarnings}
             rebuildStatus={rebuildStatus}
             rebuildWarnings={rebuildWarnings}
@@ -1229,11 +1265,16 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             onImportModeChange={setMemoryImportMode}
             onImportTextChange={setImportText}
             onImportTypeChange={setImportType}
-            onPdfFileChange={setSelectedPdfFile}
+            onPdfFileChange={(file) => {
+              setSelectedPdfFile(file);
+              if (!file) setPdfInputVersion((value) => value + 1);
+            }}
             onAnalyze={runMemoryAnalysis}
             onExtractPdf={extractAndAnalyzePdf}
             onSaveToMemory={saveImportToMemory}
             onSaveSourceOnly={saveImportSourceOnly}
+            onUpdateSource={(updateProductSummary) => saveImportToMemory(updateProductSummary, "update")}
+            onSaveAsNewSource={() => saveImportToMemory(false, "append")}
             onRebuildMemory={rebuildProjectMemoryFromSources}
             onSaveConsolidatedMemory={saveConsolidatedMemory}
             onCancelConsolidatedMemory={() => setConsolidatedPreview(null)}
@@ -1242,7 +1283,6 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               if (memoryDashboard?.suggestedNextOutcome) createOutcomeFromImportSuggestion(memoryDashboard.suggestedNextOutcome);
               else createRecommendedOutcome();
             }}
-            onCreateOutcomeFromSuggestion={createOutcomeFromImportSuggestion}
             onDiscardReview={discardImportReview}
             onViewImport={setViewingImport}
             onReAnalyzeImport={reAnalyzeImport}
@@ -1506,11 +1546,13 @@ function MemoryTab({
   importText,
   importType,
   selectedPdfFile,
+  pdfInputVersion,
   pdfExtractionStatus,
   pdfExtractionError,
   analysis,
   consolidatedPreview,
   viewingImport,
+  reanalyzingSource,
   warnings,
   rebuildStatus,
   rebuildWarnings,
@@ -1524,12 +1566,13 @@ function MemoryTab({
   onExtractPdf,
   onSaveToMemory,
   onSaveSourceOnly,
+  onUpdateSource,
+  onSaveAsNewSource,
   onRebuildMemory,
   onSaveConsolidatedMemory,
   onCancelConsolidatedMemory,
   onImportAnotherPdf,
   onCreateDashboardOutcome,
-  onCreateOutcomeFromSuggestion,
   onDiscardReview,
   onViewImport,
   onReAnalyzeImport,
@@ -1538,16 +1581,18 @@ function MemoryTab({
   project: Project;
   memory: Memory;
   imports: ProjectImport[];
-  dashboard: ConsolidatedProjectMemory;
+  dashboard: ConsolidatedProjectMemory | null;
   importMode: MemoryImportMode;
   importText: string;
   importType: MemoryInputType;
   selectedPdfFile: File | null;
+  pdfInputVersion: number;
   pdfExtractionStatus: string;
   pdfExtractionError: string;
   analysis: ProjectHistoryAnalysis | null;
   consolidatedPreview: ConsolidatedProjectMemory | null;
   viewingImport: ProjectImport | null;
+  reanalyzingSource: ProjectImport | null;
   warnings: string[];
   rebuildStatus: string;
   rebuildWarnings: string[];
@@ -1561,30 +1606,159 @@ function MemoryTab({
   onExtractPdf: () => void;
   onSaveToMemory: (updateProductSummary?: boolean) => void;
   onSaveSourceOnly: () => void;
+  onUpdateSource: (updateProductSummary?: boolean) => void;
+  onSaveAsNewSource: () => void;
   onRebuildMemory: () => void;
   onSaveConsolidatedMemory: () => void;
   onCancelConsolidatedMemory: () => void;
   onImportAnotherPdf: () => void;
   onCreateDashboardOutcome: () => void;
-  onCreateOutcomeFromSuggestion: (suggestion: SuggestedOutcome) => void;
   onDiscardReview: () => void;
   onViewImport: (source: ProjectImport | null) => void;
   onReAnalyzeImport: (source: ProjectImport) => void;
   onMemoryChange: (patch: Partial<Memory>) => void;
 }) {
   const [editingField, setEditingField] = useState<LegacyMemoryFieldKey | null>(null);
+  const mode = getMemoryTabMode(memory, analysis);
+  const showReview = mode === "review" && Boolean(analysis);
+  const showDashboard = mode === "dashboard" && dashboardHasContent(dashboard);
+  const showEmpty = mode === "empty";
+  const savedDashboard = showDashboard ? dashboard : null;
+
+  const importPanel = (
+    <Panel>
+      <PanelBody>
+        <SectionHeader title="Import Project History" eyebrow="Memory" />
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg border border-line bg-white p-1">
+          {(["Paste text", "Upload PDF"] as MemoryImportMode[]).map((modeOption) => (
+            <button
+              key={modeOption}
+              className={cx(
+                "h-9 rounded-md text-sm font-medium transition",
+                importMode === modeOption ? "bg-ink text-white" : "text-slateText hover:bg-slate-100 hover:text-ink",
+              )}
+              onClick={() => onImportModeChange(modeOption)}
+            >
+              {modeOption}
+            </button>
+          ))}
+        </div>
+
+        {importMode === "Paste text" ? (
+          <div className="space-y-4">
+            <div>
+              <FieldLabel>Input type</FieldLabel>
+              <Select className="mt-2" value={importType} onChange={(event) => onImportTypeChange(event.target.value as MemoryInputType)}>
+                {memoryInputTypes.map((type) => (
+                  <option key={type}>{type}</option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <FieldLabel>Raw context</FieldLabel>
+              <TextArea
+                className="mt-2 min-h-72 font-mono text-xs"
+                value={importText}
+                placeholder="Paste chat history, agent result, research notes, repo summary, or any other project context."
+                onChange={(event) => onImportTextChange(event.target.value)}
+              />
+            </div>
+            <Button variant="primary" className="w-full" onClick={onAnalyze} disabled={!importText.trim()}>
+              <Wand2 className="h-4 w-4" />
+              Analyze & Organize
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <label className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-line bg-white p-5 text-center transition hover:border-electric/50 hover:bg-blue-50/30">
+              <Upload className="mb-3 h-6 w-6 text-electric" />
+              <span className="font-medium text-ink">Choose a text-based PDF</span>
+              <span className="mt-1 text-sm leading-6 text-slateText">ChatGPT exports, specs, memos, meeting notes, research, or agent results.</span>
+              <input
+                key={pdfInputVersion}
+                className="sr-only"
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(event) => onPdfFileChange(event.target.files?.[0] || null)}
+              />
+            </label>
+            {selectedPdfFile ? (
+              <div className="rounded-lg border border-line bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-ink">{selectedPdfFile.name}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-500">{formatFileSize(selectedPdfFile.size)}</p>
+                  </div>
+                  <Button variant="ghost" onClick={() => onPdfFileChange(null)}>
+                    <X className="h-4 w-4" />
+                    Clear
+                  </Button>
+                </div>
+                {pdfExtractionStatus ? <p className="mt-3 text-sm text-slateText">{pdfExtractionStatus}</p> : null}
+              </div>
+            ) : null}
+            <Button variant="primary" className="w-full" onClick={onExtractPdf} disabled={!selectedPdfFile}>
+              <Wand2 className="h-4 w-4" />
+              Extract & Analyze PDF
+            </Button>
+            {pdfExtractionError ? (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-800">
+                {pdfExtractionError}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {warnings.length > 0 && !showReview ? (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
+            {warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </div>
+        ) : null}
+        {rebuildStatus && !showReview ? (
+          <p className="mt-3 text-sm leading-6 text-slateText">{rebuildStatus}</p>
+        ) : null}
+      </PanelBody>
+    </Panel>
+  );
+
+  if (showReview && analysis) {
+    return (
+      <div className="space-y-5">
+        <UnsavedAnalysisBanner warnings={warnings} />
+        <PdfImportReview
+          memory={memory}
+          analysis={analysis}
+          reanalyzingSource={reanalyzingSource}
+          onSaveToMemory={onSaveToMemory}
+          onSaveSourceOnly={onSaveSourceOnly}
+          onUpdateSource={onUpdateSource}
+          onSaveAsNewSource={onSaveAsNewSource}
+          onDiscardReview={onDiscardReview}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
-      <ProjectRoadmapDashboard
-        project={project}
-        dashboard={dashboard}
-        targetUsers={memory.targetUsers}
-        sourceCount={imports.length}
-        onRebuildMemory={onRebuildMemory}
-        onCreateOutcome={onCreateDashboardOutcome}
-        rebuildBusy={rebuildBusy}
-      />
+      {savedDashboard ? (
+        <ProjectRoadmapDashboard
+          project={project}
+          dashboard={savedDashboard}
+          targetUsers={memory.targetUsers}
+          sourceCount={imports.length}
+          onRebuildMemory={onRebuildMemory}
+          onCreateOutcome={onCreateDashboardOutcome}
+          rebuildBusy={rebuildBusy}
+        />
+      ) : (
+        <EmptyProjectMemoryState
+          onUploadPdf={() => onImportModeChange("Upload PDF")}
+          onPasteText={() => onImportModeChange("Paste text")}
+        />
+      )}
 
       {consolidatedPreview ? (
         <ConsolidatedMemoryPreview
@@ -1607,130 +1781,95 @@ function MemoryTab({
 
       <div className="grid gap-5 lg:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
         <div className="flex flex-col gap-5">
-        <Panel>
-          <PanelBody>
-            <SectionHeader title="Import Project History" eyebrow="Memory" />
-            <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg border border-line bg-white p-1">
-              {(["Paste text", "Upload PDF"] as MemoryImportMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={cx(
-                    "h-9 rounded-md text-sm font-medium transition",
-                    importMode === mode ? "bg-ink text-white" : "text-slateText hover:bg-slate-100 hover:text-ink",
-                  )}
-                  onClick={() => onImportModeChange(mode)}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
+          {importPanel}
 
-            {importMode === "Paste text" ? (
-              <div className="space-y-4">
-                <div>
-                  <FieldLabel>Input type</FieldLabel>
-                  <Select className="mt-2" value={importType} onChange={(event) => onImportTypeChange(event.target.value as MemoryInputType)}>
-                    {memoryInputTypes.map((type) => (
-                      <option key={type}>{type}</option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <FieldLabel>Raw context</FieldLabel>
-                  <TextArea
-                    className="mt-2 min-h-72 font-mono text-xs"
-                    value={importText}
-                    placeholder="Paste chat history, agent result, research notes, repo summary, or any other project context."
-                    onChange={(event) => onImportTextChange(event.target.value)}
-                  />
-                </div>
-                <Button variant="primary" className="w-full" onClick={onAnalyze} disabled={!importText.trim()}>
-                  <Wand2 className="h-4 w-4" />
-                  Analyze & Organize
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <label className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-line bg-white p-5 text-center transition hover:border-electric/50 hover:bg-blue-50/30">
-                  <Upload className="mb-3 h-6 w-6 text-electric" />
-                  <span className="font-medium text-ink">Choose a text-based PDF</span>
-                  <span className="mt-1 text-sm leading-6 text-slateText">ChatGPT exports, specs, memos, meeting notes, research, or agent results.</span>
-                  <input
-                    className="sr-only"
-                    type="file"
-                    accept="application/pdf,.pdf"
-                    onChange={(event) => onPdfFileChange(event.target.files?.[0] || null)}
-                  />
-                </label>
-                {selectedPdfFile ? (
-                  <div className="rounded-lg border border-line bg-white p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-medium text-ink">{selectedPdfFile.name}</p>
-                        <p className="mt-1 font-mono text-xs text-slate-500">{formatFileSize(selectedPdfFile.size)}</p>
-                      </div>
-                      <Button variant="ghost" onClick={() => onPdfFileChange(null)}>
-                        <X className="h-4 w-4" />
-                        Clear
-                      </Button>
-                    </div>
-                    {pdfExtractionStatus ? <p className="mt-3 text-sm text-slateText">{pdfExtractionStatus}</p> : null}
-                  </div>
-                ) : null}
-                <Button variant="primary" className="w-full" onClick={onExtractPdf} disabled={!selectedPdfFile}>
-                  <Wand2 className="h-4 w-4" />
-                  Extract & Analyze PDF
-                </Button>
-                {pdfExtractionError ? (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-800">
-                    {pdfExtractionError}
-                  </div>
-                ) : null}
-              </div>
-            )}
-
-            {warnings.length ? (
-              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
-                {warnings.map((warning) => (
-                  <p key={warning}>{warning}</p>
-                ))}
-              </div>
-            ) : null}
-            {rebuildStatus ? (
-              <p className="mt-3 text-sm leading-6 text-slateText">{rebuildStatus}</p>
-            ) : null}
-          </PanelBody>
-        </Panel>
-
-        {analysis ? (
-          <PdfImportReview
-            project={project}
-            memory={memory}
-            analysis={analysis}
-            onSaveToMemory={onSaveToMemory}
-            onSaveSourceOnly={onSaveSourceOnly}
-            onCreateOutcomeFromSuggestion={onCreateOutcomeFromSuggestion}
-            onDiscardReview={onDiscardReview}
+          <ImportsPanel
+            imports={imports}
+            viewingImport={viewingImport}
+            onRebuildMemory={onRebuildMemory}
+            rebuildBusy={rebuildBusy}
+            onViewImport={onViewImport}
+            onReAnalyzeImport={onReAnalyzeImport}
           />
-        ) : null}
+        </div>
 
-        <ImportsPanel
-          imports={imports}
-          viewingImport={viewingImport}
-          onRebuildMemory={onRebuildMemory}
-          rebuildBusy={rebuildBusy}
-          onViewImport={onViewImport}
-          onReAnalyzeImport={onReAnalyzeImport}
-        />
+        {savedDashboard ? (
+          <MemoryReadCards
+            memory={memory}
+            editingField={editingField}
+            onEdit={setEditingField}
+            onMemoryChange={onMemoryChange}
+          />
+        ) : (
+          <Panel>
+            <PanelBody>
+              <EmptyState
+                title={showEmpty ? "No saved memory yet" : "Memory review pending"}
+                detail="Saved sources and structured memory will appear here after you save an import to project memory."
+              />
+            </PanelBody>
+          </Panel>
+        )}
       </div>
+    </div>
+  );
+}
 
-        <MemoryReadCards
-          memory={memory}
-          editingField={editingField}
-          onEdit={setEditingField}
-          onMemoryChange={onMemoryChange}
+function EmptyProjectMemoryState({
+  onUploadPdf,
+  onPasteText,
+}: {
+  onUploadPdf: () => void;
+  onPasteText: () => void;
+}) {
+  return (
+    <Panel>
+      <PanelBody>
+        <SectionHeader
+          title="Build project memory"
+          eyebrow="Memory"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={onPasteText}>
+                <Clipboard className="h-4 w-4" />
+                Paste text
+              </Button>
+              <Button variant="primary" onClick={onUploadPdf}>
+                <Upload className="h-4 w-4" />
+                Upload PDF
+              </Button>
+            </div>
+          }
         />
+        <p className="max-w-2xl text-sm leading-6 text-slateText">
+          Import project chats, specs, or Codex reports. Brainpress will turn them into a clear roadmap.
+        </p>
+      </PanelBody>
+    </Panel>
+  );
+}
+
+function UnsavedAnalysisBanner({ warnings }: { warnings: string[] }) {
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="font-semibold text-ink">Unsaved PDF analysis</p>
+          <p className="mt-1 text-sm leading-6 text-blue-900">
+            Save it to update project memory, save it as a source only, or discard it.
+          </p>
+        </div>
+        <span className="w-fit rounded-md border border-blue-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-blue-700">
+          Unsaved analysis
+        </span>
       </div>
+      {warnings.length ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1753,6 +1892,8 @@ function ProjectRoadmapDashboard({
   rebuildBusy: boolean;
 }) {
   const suggested = dashboard.suggestedNextOutcome;
+  const currentGoal = suggested?.title || dashboard.whatToDoNext[0] || "";
+  const hasRoadmap = dashboard.roadmapNow.length || dashboard.roadmapNext.length || dashboard.roadmapLater.length;
 
   return (
     <Panel>
@@ -1781,69 +1922,73 @@ function ProjectRoadmapDashboard({
               {sourceCount} saved source{sourceCount === 1 ? "" : "s"}
             </span>
           </div>
-          <p className="mt-3 text-sm leading-6 text-blue-900">
-            {dashboard.plainEnglishSummary || "Import project history PDFs to build one clear, founder-friendly memory dashboard."}
-          </p>
+          {dashboard.plainEnglishSummary ? <p className="mt-3 text-sm leading-6 text-blue-900">{dashboard.plainEnglishSummary}</p> : null}
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
           <div className="space-y-4">
             <div className="rounded-lg border border-line bg-white p-4">
               <FieldLabel>Product Snapshot</FieldLabel>
-              <p className="mt-3 text-sm leading-6 text-slateText">
-                {dashboard.productSnapshot || project.description || "No product snapshot yet. Import sources to build one."}
-              </p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <SnapshotLine label="Who it is for" value={targetUsers || "Target users are not clear yet."} />
-                <SnapshotLine
-                  label="Current goal / next outcome"
-                  value={suggested?.title || dashboard.whatToDoNext[0] || "Choose the next verified outcome."}
-                />
-              </div>
+              <p className="mt-3 text-sm leading-6 text-slateText">{dashboard.productSnapshot || project.description}</p>
+              {targetUsers || currentGoal ? (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {targetUsers ? <SnapshotLine label="Who it is for" value={targetUsers} /> : null}
+                  {currentGoal ? <SnapshotLine label="Current goal / next outcome" value={currentGoal} /> : null}
+                </div>
+              ) : null}
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
-              <DashboardListSection title="What is Done" items={dashboard.whatIsDone} />
-              <DashboardListSection title="What is Broken / Risky" items={dashboard.whatIsBrokenOrRisky} tone="risk" />
-              <DashboardListSection title="What To Do Next" items={dashboard.whatToDoNext} tone="next" />
+              <DashboardListSection title="Done" items={dashboard.whatIsDone} />
+              <DashboardListSection title="Broken / Risky" items={dashboard.whatIsBrokenOrRisky} tone="risk" />
+              <DashboardListSection title="Next Steps" items={dashboard.whatToDoNext} tone="next" />
             </div>
 
             <div className="rounded-lg border border-line bg-white p-4">
               <FieldLabel>Roadmap</FieldLabel>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
-                <DashboardListSection title="Now" items={dashboard.roadmapNow} compact />
-                <DashboardListSection title="Next" items={dashboard.roadmapNext} compact />
-                <DashboardListSection title="Later" items={dashboard.roadmapLater} compact />
-              </div>
+              {hasRoadmap ? (
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <DashboardListSection title="Now" items={dashboard.roadmapNow} compact />
+                  <DashboardListSection title="Next" items={dashboard.roadmapNext} compact />
+                  <DashboardListSection title="Later" items={dashboard.roadmapLater} compact />
+                </div>
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-slate-500">Not enough project memory yet.</p>
+              )}
             </div>
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-              <FieldLabel>Suggested Next Outcome</FieldLabel>
-              <p className="mt-3 text-lg font-semibold text-ink">{suggested?.title || "No suggested outcome yet"}</p>
-              <p className="mt-2 text-sm leading-6 text-slateText">
-                {suggested?.goal || "Import or rebuild sources to generate a focused next outcome."}
-              </p>
-              {suggested?.acceptanceCriteria.length ? (
+            {suggested ? (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <FieldLabel>Suggested Next Outcome</FieldLabel>
+                <p className="mt-3 text-lg font-semibold text-ink">{suggested.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slateText">{suggested.goal}</p>
+                {suggested.acceptanceCriteria.length ? (
+                  <div className="mt-4">
+                    <p className="mb-2 font-mono text-xs font-semibold uppercase text-blue-700">Acceptance checks</p>
+                    <SimpleBulletList items={suggested.acceptanceCriteria} />
+                  </div>
+                ) : null}
                 <div className="mt-4">
-                  <p className="mb-2 font-mono text-xs font-semibold uppercase text-blue-700">Acceptance checks</p>
-                  <SimpleBulletList items={suggested.acceptanceCriteria} />
+                  <p className="mb-2 font-mono text-xs font-semibold uppercase text-blue-700">Verification</p>
+                  <div className="rounded-md border border-blue-200 bg-white p-3 font-mono text-xs leading-5 text-slate-600">
+                    {(suggested.verificationCommands.length ? suggested.verificationCommands : project.verificationCommands).join("\n")}
+                  </div>
                 </div>
-              ) : null}
-              <div className="mt-4 rounded-md border border-blue-200 bg-white p-3 font-mono text-xs leading-5 text-slate-600">
-                {(suggested?.verificationCommands.length ? suggested.verificationCommands : project.verificationCommands).join("\n")}
               </div>
-            </div>
+            ) : null}
 
-            <details className="rounded-lg border border-line bg-white p-4">
-              <summary className="cursor-pointer font-mono text-xs font-semibold uppercase text-electric">
-                Technical Details
-              </summary>
-              <div className="mt-3">
-                <SimpleBulletList items={dashboard.technicalDetails} empty="No important technical details have been consolidated yet." />
-              </div>
-            </details>
+            {dashboard.technicalDetails.length ? (
+              <details className="rounded-lg border border-line bg-white p-4">
+                <summary className="cursor-pointer font-mono text-xs font-semibold uppercase text-electric">
+                  Technical Details
+                </summary>
+                <div className="mt-3">
+                  <SimpleBulletList items={dashboard.technicalDetails} />
+                </div>
+              </details>
+            ) : null}
 
             <DashboardListSection title="Open Questions" items={dashboard.openQuestions} />
           </div>
@@ -2039,6 +2184,8 @@ function DashboardListSection({
   tone?: "default" | "risk" | "next";
   compact?: boolean;
 }) {
+  if (!items.length) return null;
+
   const toneClass =
     tone === "risk"
       ? "border-rose-200 bg-rose-50"
@@ -2053,7 +2200,7 @@ function DashboardListSection({
   );
 }
 
-function SimpleBulletList({ items, empty = "No strong signal detected yet." }: { items: string[]; empty?: string }) {
+function SimpleBulletList({ items, empty = "Not enough project memory yet." }: { items: string[]; empty?: string }) {
   if (!items.length) return <p className="text-sm leading-6 text-slate-500">{empty}</p>;
   return (
     <ul className="space-y-2 text-sm leading-6 text-slateText">
@@ -2079,22 +2226,26 @@ function SnapshotLine({ label, value }: { label: string; value: string }) {
 function PdfImportReview({
   memory,
   analysis,
+  reanalyzingSource,
   onSaveToMemory,
   onSaveSourceOnly,
-  onCreateOutcomeFromSuggestion,
+  onUpdateSource,
+  onSaveAsNewSource,
   onDiscardReview,
 }: {
-  project: Project;
   memory: Memory;
   analysis: ProjectHistoryAnalysis;
+  reanalyzingSource: ProjectImport | null;
   onSaveToMemory: (updateProductSummary?: boolean) => void;
   onSaveSourceOnly: () => void;
-  onCreateOutcomeFromSuggestion: (suggestion: SuggestedOutcome) => void;
+  onUpdateSource: (updateProductSummary?: boolean) => void;
+  onSaveAsNewSource: () => void;
   onDiscardReview: () => void;
 }) {
   const source = analysis.source;
   const sourceLabel = source.sourceType === "PDF" ? "PDF Import Review" : "Text Import Review";
   const firstSuggestion = analysis.suggestedOutcomes[0];
+  const isReanalysis = Boolean(reanalyzingSource);
 
   return (
     <Panel>
@@ -2104,13 +2255,32 @@ function PdfImportReview({
           eyebrow="SOURCE"
           action={
             <div className="flex flex-wrap gap-2">
-              <Button onClick={onSaveSourceOnly}>
-                <Save className="h-4 w-4" />
-                Save as Source Only
-              </Button>
-              <Button variant="primary" onClick={() => onSaveToMemory(false)}>
-                <CheckCircle2 className="h-4 w-4" />
-                Save to Memory
+              {isReanalysis ? (
+                <>
+                  <Button onClick={onSaveAsNewSource}>
+                    <Save className="h-4 w-4" />
+                    Save as New Source
+                  </Button>
+                  <Button variant="primary" onClick={() => onUpdateSource(false)}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Update this source
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button onClick={onSaveSourceOnly}>
+                    <Save className="h-4 w-4" />
+                    Save as Source Only
+                  </Button>
+                  <Button variant="primary" onClick={() => onSaveToMemory(false)}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Save to Memory
+                  </Button>
+                </>
+              )}
+              <Button variant="ghost" onClick={onDiscardReview}>
+                <X className="h-4 w-4" />
+                Discard
               </Button>
             </div>
           }
@@ -2124,46 +2294,14 @@ function PdfImportReview({
 
         <div className="mb-4 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900 sm:flex-row sm:items-center sm:justify-between">
           <span>
-            Brainpress extracted the {source.sourceType === "PDF" ? "PDF" : "source"} and converted it into structured project memory.
-            Review the analysis below before saving.
+            {isReanalysis
+              ? `Brainpress re-analyzed ${reanalyzingSource?.title || "this saved source"}. Update only this source, save it as a new source, or cancel.`
+              : `Brainpress extracted the ${source.sourceType === "PDF" ? "PDF" : "source"} and converted it into structured project memory. Review the analysis below before saving.`}
           </span>
           <AnalyzerBadge value={analysis.analyzer} />
         </div>
 
         <FounderReviewCard analysis={analysis} nextOutcome={firstSuggestion} />
-
-        <div className="mb-4 rounded-lg border border-line bg-white p-4">
-          <p className="mb-3 text-sm font-medium text-ink">Analysis Summary</p>
-          <ul className="space-y-2 text-sm leading-6 text-slateText">
-            {(analysis.analysisBullets.length ? analysis.analysisBullets : [analysis.analysisSummary]).map((item) => (
-              <li key={item} className="flex gap-2">
-                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-electric" />
-                <span>{item.replace(/^[-*]\s*/, "")}</span>
-              </li>
-            ))}
-          </ul>
-          {analysis.detectedThemes.length ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {analysis.detectedThemes.map((theme) => (
-                <span key={theme} className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 font-mono text-xs text-blue-700">
-                  {theme}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="mb-4 grid gap-3 md:grid-cols-2">
-          <ImportSection title="Product Summary" value={analysis.memorySections.productSummary} />
-          <ImportSection title="Key Facts" value={analysis.keyFacts} />
-          <ImportSection title="Active Decisions" value={analysis.memorySections.activeDecisions} />
-          <ImportSection title="Completed Work" value={analysis.memorySections.completedWork} />
-          <ImportSection title="Known Issues" value={analysis.memorySections.knownIssues} />
-          <ImportSection title="Open Questions" value={analysis.memorySections.openQuestions} />
-          <ImportSection title="Roadmap / Next Steps" value={analysis.memorySections.roadmap} />
-          <ImportSection title="Current Build State" value={analysis.memorySections.currentBuildState} />
-          <ImportSection title="Technical Architecture" value={analysis.memorySections.technicalArchitecture} />
-        </div>
 
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
           <p className="font-medium">Memory merge behavior</p>
@@ -2172,28 +2310,52 @@ function PdfImportReview({
             Product Summary stays unchanged unless it is currently empty.
           </p>
           {memory.productSummary.trim() ? (
-            <Button className="mt-3" onClick={() => onSaveToMemory(true)}>
+            <Button className="mt-3" onClick={() => (isReanalysis ? onUpdateSource(true) : onSaveToMemory(true))}>
               <Save className="h-4 w-4" />
-              Save + Update Summary
+              {isReanalysis ? "Update Source + Summary" : "Save + Update Summary"}
             </Button>
           ) : null}
         </div>
 
-        <div className="rounded-lg border border-line bg-white p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <details className="rounded-lg border border-line bg-white p-4">
+          <summary className="cursor-pointer font-mono text-xs font-semibold uppercase text-electric">
+            Review analysis details
+          </summary>
+          <div className="mt-4 rounded-lg border border-line bg-mist p-4">
+            <p className="mb-3 text-sm font-medium text-ink">Analysis Summary</p>
+            <ul className="space-y-2 text-sm leading-6 text-slateText">
+              {(analysis.analysisBullets.length ? analysis.analysisBullets : [analysis.analysisSummary]).map((item) => (
+                <li key={item} className="flex gap-2">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-electric" />
+                  <span>{item.replace(/^[-*]\s*/, "")}</span>
+                </li>
+              ))}
+            </ul>
+            {analysis.detectedThemes.length ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {analysis.detectedThemes.map((theme) => (
+                  <span key={theme} className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 font-mono text-xs text-blue-700">
+                    {theme}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <ImportSection title="Product Summary" value={analysis.memorySections.productSummary} />
+            <ImportSection title="Key Facts" value={analysis.keyFacts} />
+            <ImportSection title="Active Decisions" value={analysis.memorySections.activeDecisions} />
+            <ImportSection title="Completed Work" value={analysis.memorySections.completedWork} />
+            <ImportSection title="Known Issues" value={analysis.memorySections.knownIssues} />
+            <ImportSection title="Open Questions" value={analysis.memorySections.openQuestions} />
+            <ImportSection title="Roadmap / Next Steps" value={analysis.memorySections.roadmap} />
+            <ImportSection title="Current Build State" value={analysis.memorySections.currentBuildState} />
+            <ImportSection title="Technical Architecture" value={analysis.memorySections.technicalArchitecture} />
+          </div>
+
+          <div className="mt-4">
             <FieldLabel>Suggested Outcomes</FieldLabel>
-            <div className="flex flex-wrap gap-2">
-              {firstSuggestion ? (
-                <Button onClick={() => onCreateOutcomeFromSuggestion(firstSuggestion)}>
-                  <Plus className="h-4 w-4" />
-                  {source.sourceType === "PDF" ? "Generate Outcome from PDF" : "Generate Outcome from Source"}
-                </Button>
-              ) : null}
-              <Button variant="ghost" onClick={onDiscardReview}>
-                <X className="h-4 w-4" />
-                Discard
-              </Button>
-            </div>
           </div>
           {analysis.suggestedOutcomes.length ? (
             <div className="space-y-3">
@@ -2204,10 +2366,6 @@ function PdfImportReview({
                       <p className="font-medium text-ink">{suggestion.title}</p>
                       <p className="mt-1 text-sm leading-6 text-slateText">{suggestion.goal}</p>
                     </div>
-                    <Button onClick={() => onCreateOutcomeFromSuggestion(suggestion)}>
-                      <Plus className="h-4 w-4" />
-                      Create Outcome
-                    </Button>
                   </div>
                   <div className="mt-3 font-mono text-xs leading-5 text-slate-500">
                     {suggestion.verificationCommands.join(" · ")}
@@ -2218,9 +2376,8 @@ function PdfImportReview({
           ) : (
             <p className="text-sm text-slate-500">No suggested outcomes found yet.</p>
           )}
-        </div>
-
-        <RawSourceText className="mt-4" source={source} previewText={analysis.previewText} />
+          <RawSourceText className="mt-4" source={source} previewText={analysis.previewText} />
+        </details>
       </PanelBody>
     </Panel>
   );
@@ -2290,7 +2447,7 @@ function FounderReviewSection({ title, items }: { title: string; items: string[]
           ))}
         </ul>
       ) : (
-        <p className="mt-2 text-sm text-slate-500">No strong signal detected.</p>
+        <p className="mt-2 text-sm text-slate-500">Not enough project memory yet.</p>
       )}
     </div>
   );
@@ -2302,7 +2459,7 @@ function ImportSection({ title, value }: { title: string; value: string | string
   return (
     <div className="rounded-lg border border-line bg-white p-4">
       <p className="mb-2 font-mono text-xs font-semibold uppercase text-electric">{title}</p>
-      <p className="whitespace-pre-wrap text-sm leading-6 text-slateText">{content || "No strong signal detected."}</p>
+      <p className="whitespace-pre-wrap text-sm leading-6 text-slateText">{content || "Not enough project memory yet."}</p>
     </div>
   );
 }
@@ -2991,13 +3148,6 @@ function addRepairOutcomeIfMissing(outcomes: Outcome[], repairOutcome: Outcome |
   if (!repairOutcome) return outcomes;
   if (outcomes.some((outcome) => outcome.title === repairOutcome.title)) return outcomes;
   return [repairOutcome, ...outcomes];
-}
-
-function addProjectImportIfMissing(imports: ProjectImport[], source: ProjectImport) {
-  if (imports.some((item) => item.id === source.id)) {
-    return imports.map((item) => (item.id === source.id ? source : item));
-  }
-  return [source, ...imports];
 }
 
 function localPromptPath(run: AgentRun) {
