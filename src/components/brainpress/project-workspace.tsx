@@ -1765,6 +1765,7 @@ function FounderReviewCard({
   return (
     <div className="mb-4 rounded-lg border border-line bg-white p-4">
       <FieldLabel>Founder Review</FieldLabel>
+      <p className="mt-3 font-mono text-xs font-semibold uppercase text-electric">Plain English Summary</p>
       <p className="mt-3 text-sm leading-6 text-slateText">
         {analysis.plainEnglishSummary || analysis.analysisSummary || "Brainpress found source history. Review the sections below before saving."}
       </p>
