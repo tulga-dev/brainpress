@@ -62,7 +62,20 @@ OCR is intentionally not implemented in this version.
 
 ## Memory Analysis
 
-PDF text is passed through the project history analyzer. It reuses the existing heuristic parser and adds long-input handling:
+PDF text is passed through the project history analyzer. If `OPENAI_API_KEY` is available, Brainpress first asks a server-side OpenAI analyzer for structured JSON. The key is read from `process.env.OPENAI_API_KEY` only inside the backend route and is never exposed to the browser.
+
+The OpenAI analyzer is optional. If the key is missing, the request fails, or the response fails JSON validation, Brainpress falls back to the local heuristic parser and shows "AI unavailable, local analysis used."
+
+The AI analyzer is instructed to:
+
+- write for a non-technical founder
+- prefer 3-6 bullets per section
+- remove duplicates, broken fragments, repeated URLs, and noisy commands
+- preserve important facts, URLs, commands, file paths, errors, decisions, and next steps only when they matter
+- put unclear facts in Open Questions
+- keep raw extracted text separate from primary memory
+
+The local analyzer remains available and adds long-input handling:
 
 - light repeated header/footer removal
 - safe analysis cap for extremely long text
@@ -79,6 +92,8 @@ PDF text is passed through the project history analyzer. It reuses the existing 
 
 After extraction, Brainpress shows a review screen:
 
+- Analyzer state: `AI analysis used`, `Local analysis used`, or `AI unavailable, local analysis used`
+- Founder Review: Plain English Summary, What is done, What is broken / risky, What to do next, and Suggested next outcome
 - Analysis Summary: 5-8 bullets, source file name, page count, and detected theme chips
 - Structured Memory Review: Product Summary, Key Facts, Current Build State, Technical Architecture, Active Decisions, Completed Work, Known Issues, Open Questions, Roadmap, and Suggested Outcomes
 - Raw Source Text: collapsed by default, with a short preview and an expand button
@@ -105,6 +120,16 @@ Saving to memory appends, it does not blindly replace:
 Simple deduplication removes repeated imported lines.
 
 The raw extracted text remains in `ProjectImport.extractedText` and can be viewed from the source history. It is not pasted into the main import textarea and is not saved directly into memory cards.
+
+## OpenAI Setup
+
+Create `.env.local` from `.env.example` and add:
+
+```text
+OPENAI_API_KEY=
+```
+
+Restart the Next.js dev server after changing environment variables. Do not prefix the key with `NEXT_PUBLIC_`; Brainpress only reads it from the server.
 
 ## Suggested Outcomes
 

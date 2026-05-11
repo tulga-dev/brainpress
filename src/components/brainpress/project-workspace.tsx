@@ -28,6 +28,7 @@ import { nextTaskForInterruptedRun, type CodexRunEvent, type CodexRunState } fro
 import {
   agentReadiness,
   analyzeProjectHistory,
+  dedupe,
   fieldLines,
   generateAgentPrompt,
   generateOutcomePlan,
@@ -277,7 +278,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setProjectHistoryAnalysis(null);
     try {
       const extraction = await extractPdfText(selectedPdfFile, (message) => setPdfExtractionStatus(message));
-      const analysis = analyzeProjectHistory(extraction.text, {
+      setPdfExtractionStatus("Converting PDF into project memory");
+      const metadata = {
         project: activeProject,
         currentMemory: activeMemory,
         sourceType: "PDF",
@@ -286,7 +288,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         fileSize: selectedPdfFile.size,
         pageCount: extraction.pageCount,
         extractedPages: extraction.pages,
-      });
+      } as const;
+      const analysis = await analyzeExtractedHistory(extraction.text, metadata);
       setProjectHistoryAnalysis(analysis);
       setAnalysisWarnings(analysis.warnings);
       setPdfExtractionStatus(`Extracted ${extraction.pageCount} page${extraction.pageCount === 1 ? "" : "s"}`);
@@ -327,8 +330,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setPdfExtractionStatus("");
   }
 
-  function reAnalyzeImport(source: ProjectImport) {
-    const analysis = analyzeProjectHistory(source.extractedText, {
+  async function reAnalyzeImport(source: ProjectImport) {
+    const metadata = {
       project: activeProject,
       currentMemory: activeMemory,
       sourceType: source.sourceType,
@@ -337,10 +340,50 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       fileSize: source.fileSize,
       pageCount: source.pageCount,
       extractedPages: source.extractedPages,
-    });
+    } as const;
+    const analysis = source.sourceType === "PDF"
+      ? await analyzeExtractedHistory(source.extractedText, metadata)
+      : analyzeProjectHistory(source.extractedText, metadata);
     setProjectHistoryAnalysis({ ...analysis, source: { ...analysis.source, id: source.id, createdAt: source.createdAt } });
     setAnalysisWarnings(analysis.warnings);
     setViewingImport(null);
+  }
+
+  async function analyzeExtractedHistory(
+    extractedText: string,
+    metadata: Parameters<typeof analyzeProjectHistory>[1],
+  ): Promise<ProjectHistoryAnalysis> {
+    try {
+      const response = await fetch("/api/brainpress/memory/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...metadata,
+          extractedText,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { analysis?: ProjectHistoryAnalysis; error?: string };
+      if (response.ok && payload.analysis) return payload.analysis;
+
+      const fallback = analyzeProjectHistory(extractedText, metadata);
+      return {
+        ...fallback,
+        analyzer: "AIUnavailable",
+        warnings: [...fallback.warnings, payload.error || "AI analysis unavailable. Local analysis used."],
+        source: { ...fallback.source, analyzer: "AIUnavailable" },
+      };
+    } catch (error) {
+      const fallback = analyzeProjectHistory(extractedText, metadata);
+      return {
+        ...fallback,
+        analyzer: "AIUnavailable",
+        warnings: [
+          ...fallback.warnings,
+          error instanceof Error ? `AI analysis unavailable. Local analysis used. ${error.message}` : "AI analysis unavailable. Local analysis used.",
+        ],
+        source: { ...fallback.source, analyzer: "AIUnavailable" },
+      };
+    }
   }
 
   function createOutcomeFromImportSuggestion(suggestion: SuggestedOutcome) {
@@ -1583,10 +1626,15 @@ function PdfImportReview({
           <ImportMetaLine label="Pages" value={source.pageCount ? String(source.pageCount) : "n/a"} />
         </div>
 
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
-          Brainpress extracted the {source.sourceType === "PDF" ? "PDF" : "source"} and converted it into structured project memory.
-          Review the analysis below before saving.
+        <div className="mb-4 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900 sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            Brainpress extracted the {source.sourceType === "PDF" ? "PDF" : "source"} and converted it into structured project memory.
+            Review the analysis below before saving.
+          </span>
+          <AnalyzerBadge value={analysis.analyzer} />
         </div>
+
+        <FounderReviewCard analysis={analysis} nextOutcome={firstSuggestion} />
 
         <div className="mb-4 rounded-lg border border-line bg-white p-4">
           <p className="mb-3 text-sm font-medium text-ink">Analysis Summary</p>
@@ -1612,13 +1660,13 @@ function PdfImportReview({
         <div className="mb-4 grid gap-3 md:grid-cols-2">
           <ImportSection title="Product Summary" value={analysis.memorySections.productSummary} />
           <ImportSection title="Key Facts" value={analysis.keyFacts} />
-          <ImportSection title="Current Build State" value={analysis.memorySections.currentBuildState} />
-          <ImportSection title="Technical Architecture" value={analysis.memorySections.technicalArchitecture} />
           <ImportSection title="Active Decisions" value={analysis.memorySections.activeDecisions} />
           <ImportSection title="Completed Work" value={analysis.memorySections.completedWork} />
           <ImportSection title="Known Issues" value={analysis.memorySections.knownIssues} />
           <ImportSection title="Open Questions" value={analysis.memorySections.openQuestions} />
           <ImportSection title="Roadmap / Next Steps" value={analysis.memorySections.roadmap} />
+          <ImportSection title="Current Build State" value={analysis.memorySections.currentBuildState} />
+          <ImportSection title="Technical Architecture" value={analysis.memorySections.technicalArchitecture} />
         </div>
 
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
@@ -1679,6 +1727,75 @@ function PdfImportReview({
         <RawSourceText className="mt-4" source={source} previewText={analysis.previewText} />
       </PanelBody>
     </Panel>
+  );
+}
+
+function AnalyzerBadge({ value }: { value: ProjectHistoryAnalysis["analyzer"] }) {
+  const label =
+    value === "AI"
+      ? "AI analysis used"
+      : value === "AIUnavailable"
+        ? "AI unavailable, local analysis used"
+        : "Local analysis used";
+  const className =
+    value === "AI"
+      ? "border-blue-200 bg-white text-blue-700"
+      : value === "AIUnavailable"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : "border-line bg-white text-slate-600";
+
+  return (
+    <span className={cx("shrink-0 rounded-md border px-2 py-1 font-mono text-xs font-semibold", className)}>
+      {label}
+    </span>
+  );
+}
+
+function FounderReviewCard({
+  analysis,
+  nextOutcome,
+}: {
+  analysis: ProjectHistoryAnalysis;
+  nextOutcome?: SuggestedOutcome;
+}) {
+  const whatIsDone = dedupe([...fieldLines(analysis.memorySections.currentBuildState), ...analysis.memorySections.completedWork]).slice(0, 4);
+  const whatIsBroken = analysis.memorySections.knownIssues.slice(0, 4);
+  const whatToDoNext = analysis.memorySections.roadmap.slice(0, 4);
+
+  return (
+    <div className="mb-4 rounded-lg border border-line bg-white p-4">
+      <FieldLabel>Founder Review</FieldLabel>
+      <p className="mt-3 text-sm leading-6 text-slateText">
+        {analysis.plainEnglishSummary || analysis.analysisSummary || "Brainpress found source history. Review the sections below before saving."}
+      </p>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <FounderReviewSection title="What is done" items={whatIsDone} />
+        <FounderReviewSection title="What is broken / risky" items={whatIsBroken} />
+        <FounderReviewSection title="What to do next" items={whatToDoNext} />
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+          <p className="font-mono text-xs font-semibold uppercase text-blue-700">Suggested next outcome</p>
+          <p className="mt-2 text-sm font-semibold text-ink">{nextOutcome?.title || "No next outcome suggested yet."}</p>
+          {nextOutcome ? <p className="mt-1 text-sm leading-6 text-slateText">{nextOutcome.goal}</p> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FounderReviewSection({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-lg border border-line bg-mist p-3">
+      <p className="font-mono text-xs font-semibold uppercase text-electric">{title}</p>
+      {items.length ? (
+        <ul className="mt-2 space-y-1 text-sm leading-6 text-slateText">
+          {items.map((item) => (
+            <li key={item}>- {item.replace(/^[-*]\s*/, "")}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-2 text-sm text-slate-500">No strong signal detected.</p>
+      )}
+    </div>
   );
 }
 

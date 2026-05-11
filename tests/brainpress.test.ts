@@ -17,6 +17,11 @@ import {
   pdfTextExtractionFailureMessage,
 } from "../src/lib/brainpress";
 import {
+  analyzeProjectHistoryWithOptionalOpenAI,
+  maxOpenAIInputCharacters,
+  requestOpenAIMemoryAnalysis,
+} from "../src/lib/ai/openai-memory-analyzer";
+import {
   approvalRequired,
   codexTimeoutFailure,
   codexUnavailableResult,
@@ -472,6 +477,7 @@ test("PDF import model creation stores source metadata and pages", () => {
   assert.equal(source.extractedPages[1].pageNumber, 2);
   assert.deepEqual(source.keyFacts, []);
   assert.equal(source.memorySections.productSummary, "");
+  assert.equal(source.analyzer, "Local");
 });
 
 test("project history parser handles long noisy text", () => {
@@ -584,6 +590,220 @@ test("one-line PDF extraction keeps late file paths, commands, decisions, errors
   assert.match(analysis.memorySections.knownIssues.join("\n"), /npm run build failed/i);
   assert.match(analysis.memorySections.roadmap.join("\n"), /git status --short|admin\/document-intake/i);
   assert.ok(analysis.keyFacts.some((fact) => /src\/lib\/actions\.ts|src\/app\/autobiography\/page\.tsx/i.test(fact)));
+});
+
+test("OpenAI PDF memory analysis falls back when OPENAI_API_KEY is missing", async () => {
+  const analysis = await analyzeProjectHistoryWithOptionalOpenAI(
+    "Decision: must keep raw PDF text available.\nNext create a founder-friendly PDF review.",
+    {
+      project: seedProject,
+      currentMemory: seedMemory,
+      sourceType: "PDF",
+      title: "Missing key PDF",
+      fileName: "missing-key.pdf",
+      pageCount: 1,
+    },
+    { env: { OPENAI_API_KEY: "" } },
+  );
+
+  assert.equal(analysis.analyzer, "AIUnavailable");
+  assert.equal(analysis.source.analyzer, "AIUnavailable");
+  assert.match(analysis.warnings.join("\n"), /OPENAI_API_KEY/i);
+  assert.match(analysis.source.extractedText, /raw PDF text/);
+});
+
+test("OpenAI PDF memory analysis success path uses mocked structured response", async () => {
+  let requestBody = "";
+  const mockResponse = {
+    analysisSummary: "This PDF explains that Brainpress imports PDFs and turns them into clear project memory.",
+    plainEnglishSummary: "The project is working, but PDF review needs to be easier for founders to understand.",
+    productSummary: "Brainpress helps founders turn product history into clear memory and next outcomes.",
+    currentBuildState: ["PDF extraction works.", "The review UI now separates summary from raw source."],
+    technicalArchitecture: ["Next.js App Router with localStorage-backed Brainpress state."],
+    activeDecisions: ["Raw source should stay available but not be the main memory view."],
+    completedWork: ["PDF extraction and local analysis are implemented."],
+    knownIssues: ["Local analysis can still include noisy technical fragments."],
+    openQuestions: ["Should OCR be added later for scanned PDFs?"],
+    roadmap: ["Add optional AI analysis for cleaner founder review."],
+    nextRecommendedOutcome: {
+      title: "Make PDF review founder-friendly",
+      description: "Use AI analysis to produce concise memory sections and a suggested next outcome.",
+      acceptanceChecks: ["Plain English summary exists.", "Raw source remains collapsed.", "Local fallback still works."],
+    },
+    keyFacts: ["OPENAI_API_KEY is read server-side only.", "Raw extracted text remains stored as source."],
+    discardedNoise: ["Repeated commands", "Broken transcript fragments"],
+  };
+  const fetcher: typeof fetch = async (_url, init) => {
+    requestBody = String(init?.body || "");
+    return new Response(JSON.stringify({ output_text: JSON.stringify(mockResponse) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const analysis = await analyzeProjectHistoryWithOptionalOpenAI(
+    "Decision: raw source should stay available.\nIssue: local analysis is noisy.\nNext add AI analysis.",
+    {
+      project: seedProject,
+      currentMemory: seedMemory,
+      sourceType: "PDF",
+      title: "AI PDF",
+      fileName: "ai.pdf",
+      pageCount: 2,
+    },
+    { env: { OPENAI_API_KEY: "sk-test" }, fetcher },
+  );
+
+  assert.equal(analysis.analyzer, "AI");
+  assert.equal(analysis.source.analyzer, "AI");
+  assert.match(requestBody, /json_schema/);
+  assert.doesNotMatch(requestBody, /sk-test/);
+  assert.match(analysis.plainEnglishSummary, /founders/i);
+  assert.match(analysis.memorySections.knownIssues.join("\n"), /noisy technical fragments/i);
+  assert.equal(analysis.suggestedOutcomes[0].title, "Make PDF review founder-friendly");
+  assert.match(analysis.source.extractedText, /raw source should stay available/i);
+});
+
+test("invalid OpenAI PDF memory response falls back to local analysis", async () => {
+  const fetcher: typeof fetch = async () =>
+    new Response(JSON.stringify({ output_text: JSON.stringify({ analysisSummary: 42 }) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const analysis = await analyzeProjectHistoryWithOptionalOpenAI(
+    "Decision: keep PDF imports safe.\nNext improve review mode.",
+    {
+      project: seedProject,
+      currentMemory: seedMemory,
+      sourceType: "PDF",
+      title: "Invalid AI PDF",
+      fileName: "invalid-ai.pdf",
+      pageCount: 1,
+    },
+    { env: { OPENAI_API_KEY: "sk-test" }, fetcher },
+  );
+
+  assert.equal(analysis.analyzer, "AIUnavailable");
+  assert.match(analysis.warnings.join("\n"), /invalid JSON/i);
+  assert.match(analysis.memorySections.activeDecisions.join("\n"), /keep PDF imports safe/i);
+});
+
+test("OpenAI analyzer validates and dedupes concise memory arrays", async () => {
+  const result = await requestOpenAIMemoryAnalysis(
+    {
+      projectName: seedProject.name,
+      projectGoal: seedProject.primaryGoal,
+      sourceTitle: "Noisy PDF",
+      extractedText: "Noisy PDF",
+    },
+    {
+      env: { OPENAI_API_KEY: "sk-test" },
+      fetcher: async () =>
+        new Response(
+          JSON.stringify({
+            output_text: JSON.stringify({
+              analysisSummary: "Clear summary.",
+              plainEnglishSummary: "Plain summary.",
+              productSummary: "Product summary.",
+              currentBuildState: ["Done", "Done", "Also done", "Third", "Fourth", "Fifth", "Sixth", "Seventh"],
+              technicalArchitecture: ["Next.js", "Next.js"],
+              activeDecisions: ["Keep raw source collapsed", "Keep raw source collapsed"],
+              completedWork: [],
+              knownIssues: [],
+              openQuestions: [],
+              roadmap: [],
+              nextRecommendedOutcome: {
+                title: "Review PDF memory",
+                description: "Make import review clearer.",
+                acceptanceChecks: ["Summary exists"],
+              },
+              keyFacts: ["Fact", "Fact"],
+              discardedNoise: ["duplicate URL", "duplicate URL"],
+            }),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    },
+  );
+
+  assert.equal(result.status, "success");
+  if (result.status === "success") {
+    assert.deepEqual(result.analysis.currentBuildState, ["Done", "Also done", "Third", "Fourth", "Fifth", "Sixth"]);
+    assert.deepEqual(result.analysis.technicalArchitecture, ["Next.js"]);
+    assert.deepEqual(result.analysis.discardedNoise, ["duplicate URL"]);
+  }
+});
+
+test("OpenAI analyzer truncates large PDF text before sending request body", async () => {
+  let requestBody = "";
+  const tailMarker = "TAIL_MARKER_SHOULD_NOT_BE_SENT";
+  const longText = `${"A".repeat(maxOpenAIInputCharacters + 2_000)}${tailMarker}`;
+  const fetcher: typeof fetch = async (_url, init) => {
+    requestBody = String(init?.body || "");
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          analysisSummary: "Clear summary.",
+          plainEnglishSummary: "Plain summary.",
+          productSummary: "Product summary.",
+          currentBuildState: [],
+          technicalArchitecture: [],
+          activeDecisions: [],
+          completedWork: [],
+          knownIssues: [],
+          openQuestions: ["The source was truncated for safe analysis."],
+          roadmap: [],
+          nextRecommendedOutcome: {
+            title: "Review truncated source",
+            description: "Confirm whether later PDF pages contain important decisions.",
+            acceptanceChecks: ["Open question is captured."],
+          },
+          keyFacts: [],
+          discardedNoise: [],
+        }),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+
+  const result = await requestOpenAIMemoryAnalysis(
+    {
+      projectName: seedProject.name,
+      projectGoal: seedProject.primaryGoal,
+      sourceTitle: "Large PDF",
+      extractedText: longText,
+    },
+    { env: { OPENAI_API_KEY: "sk-test" }, fetcher },
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(requestBody.includes(tailMarker), false);
+  assert.match(requestBody, /first safe chunk/i);
+});
+
+test("OpenAI request failure warning does not expose raw provider response", async () => {
+  const result = await requestOpenAIMemoryAnalysis(
+    {
+      projectName: seedProject.name,
+      projectGoal: seedProject.primaryGoal,
+      sourceTitle: "Failing PDF",
+      extractedText: "PDF text",
+    },
+    {
+      env: { OPENAI_API_KEY: "sk-test" },
+      fetcher: async () =>
+        new Response("provider stack trace with prompt echo", {
+          status: 500,
+        }),
+    },
+  );
+
+  assert.equal(result.status, "request_failed");
+  if (result.status === "request_failed") {
+    assert.match(result.warning, /500/);
+    assert.doesNotMatch(result.warning, /provider stack trace|prompt echo/i);
+  }
 });
 
 test("long PDF memory sections are capped instead of showing raw extracted blocks", () => {

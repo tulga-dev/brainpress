@@ -141,9 +141,12 @@ function normalizeProjectImport(source: ProjectImport): ProjectImport {
     extractedText: source.extractedText || "",
     extractedPages: source.extractedPages || [],
     detectedThemes: source.detectedThemes || [],
+    analyzer: source.analyzer || "Local",
     analysisSummary: source.analysisSummary || "Imported source saved without analysis summary.",
     analysisBullets: source.analysisBullets || [],
+    plainEnglishSummary: source.plainEnglishSummary || "",
     keyFacts: source.keyFacts || [],
+    discardedNoise: source.discardedNoise || [],
     memorySections: {
       productSummary: memorySections.productSummary || "",
       currentBuildState: memorySections.currentBuildState || "",

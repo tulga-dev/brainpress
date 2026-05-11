@@ -128,10 +128,13 @@ Timeout remains 10 minutes. If a run is cancelled or times out, Brainpress prese
 
 Brainpress can now import project history from the Memory tab through either pasted text or PDF upload. PDF intake is for product memory only; it does not run Codex, start agents, edit repos, or create autonomous loops.
 
-Supported PDFs are text-based PDFs such as ChatGPT exports, product specs, research memos, investor memos, meeting notes, repo summaries, and saved agent results. Brainpress extracts text page by page in the browser, shows progress like "Extracting page 3 of 18", and then analyzes the extracted text with the same project-memory heuristics.
+Supported PDFs are text-based PDFs such as ChatGPT exports, product specs, research memos, investor memos, meeting notes, repo summaries, and saved agent results. Brainpress extracts text page by page in the browser, shows progress like "Extracting page 3 of 18", and then analyzes the extracted text into project memory.
+
+PDF analysis can optionally use OpenAI from a server-side route. Add `OPENAI_API_KEY=` to `.env.local` to enable it. The key is read only from `process.env.OPENAI_API_KEY` on the server and is never sent to the browser. If the key is missing, the OpenAI request fails, or the structured JSON is invalid, Brainpress falls back to the local heuristic analyzer and labels the review as "AI unavailable, local analysis used."
 
 PDF analysis produces a review screen with:
 
+- a Founder Review with Plain English Summary, What is done, What is broken / risky, What to do next, and Suggested next outcome
 - an Analysis Summary card with 5-8 bullets, source file name, page count, and detected theme chips
 - structured memory cards for Product Summary, Key Facts, Current Build State, Technical Architecture, Active Decisions, Completed Work, Known Issues, Open Questions, Roadmap, and Suggested Outcomes
 - raw extracted PDF text collapsed by default with only a short preview

@@ -16,6 +16,7 @@ export type PromptStatus = "Draft" | "Sent" | "Completed";
 export type VerificationStatus = "Not run" | "Passing" | "Failing" | "Mixed" | "Unknown";
 export type VerificationResultStatus = "passed" | "failed";
 export type ProjectImportSourceType = "TextPaste" | "PDF";
+export type ProjectHistoryAnalyzer = "AI" | "Local" | "AIUnavailable";
 export type AgentRunStatus =
   | "Draft"
   | "Prepared"
@@ -209,9 +210,12 @@ export interface ProjectImport {
   extractedText: string;
   extractedPages: ExtractedPage[];
   detectedThemes: string[];
+  analyzer: ProjectHistoryAnalyzer;
   analysisSummary: string;
   analysisBullets: string[];
+  plainEnglishSummary: string;
   keyFacts: string[];
+  discardedNoise: string[];
   memorySections: ProjectImportMemorySections;
   suggestedOutcomes: SuggestedOutcome[];
   createdAt: string;

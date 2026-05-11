@@ -64,9 +64,12 @@ export interface ProjectHistoryAnalysis extends MemoryAnalysis {
   cleanedText: string;
   previewText: string;
   detectedThemes: string[];
+  analyzer: ProjectImport["analyzer"];
   analysisSummary: string;
   analysisBullets: string[];
+  plainEnglishSummary: string;
   keyFacts: string[];
+  discardedNoise: string[];
   memorySections: ProjectImportMemorySections;
   suggestedOutcomes: SuggestedOutcome[];
 }
@@ -213,6 +216,7 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
   );
   const analysisBullets = summarizeProjectHistoryAnalysis(metadata, memorySections, keyFacts, detectedThemes, cleanedText.length);
   const analysisSummary = analysisBullets.join("\n");
+  const plainEnglishSummary = buildLocalPlainEnglishSummary(memorySections, keyFacts);
   const source: ProjectImport = {
     id: uid("import"),
     projectId: metadata.project.id,
@@ -224,9 +228,12 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     extractedText: storedText,
     extractedPages: capExtractedPages(metadata.extractedPages || [{ pageNumber: 1, text: cleanedText }]),
     detectedThemes,
+    analyzer: "Local",
     analysisSummary,
     analysisBullets,
+    plainEnglishSummary,
     keyFacts,
+    discardedNoise: [],
     memorySections,
     suggestedOutcomes,
     createdAt: new Date().toISOString(),
@@ -239,9 +246,12 @@ export function analyzeProjectHistory(inputText: string, metadata: ProjectHistor
     cleanedText,
     previewText: safePreview(cleanedText),
     detectedThemes,
+    analyzer: "Local",
     analysisSummary,
     analysisBullets,
+    plainEnglishSummary,
     keyFacts,
+    discardedNoise: [],
     memorySections,
     suggestedOutcomes,
   };
@@ -266,9 +276,12 @@ export function createProjectImport({
   fileSize,
   pageCount,
   detectedThemes = [],
+  analyzer = "Local",
   analysisSummary = "",
   analysisBullets = [],
+  plainEnglishSummary = "",
   keyFacts = [],
+  discardedNoise = [],
   memorySections = emptyImportMemorySections(),
   suggestedOutcomes = [],
 }: {
@@ -281,9 +294,12 @@ export function createProjectImport({
   fileSize?: number;
   pageCount?: number;
   detectedThemes?: string[];
+  analyzer?: ProjectImport["analyzer"];
   analysisSummary?: string;
   analysisBullets?: string[];
+  plainEnglishSummary?: string;
   keyFacts?: string[];
+  discardedNoise?: string[];
   memorySections?: ProjectImportMemorySections;
   suggestedOutcomes?: SuggestedOutcome[];
 }): ProjectImport {
@@ -298,9 +314,12 @@ export function createProjectImport({
     extractedText,
     extractedPages,
     detectedThemes,
+    analyzer,
     analysisSummary,
     analysisBullets,
+    plainEnglishSummary,
     keyFacts,
+    discardedNoise,
     memorySections,
     suggestedOutcomes,
     createdAt: new Date().toISOString(),
@@ -492,6 +511,21 @@ function summarizeImportedBuildState(
     parts.push("The import did not add a stronger build-state signal than the current project memory.");
   }
   return parts.join(" ");
+}
+
+function buildLocalPlainEnglishSummary(memorySections: ProjectImportMemorySections, keyFacts: string[]) {
+  const facts = keyFacts.slice(0, 2);
+  const done = memorySections.completedWork.slice(0, 1);
+  const broken = memorySections.knownIssues.slice(0, 1);
+  const next = memorySections.roadmap.slice(0, 1);
+  const summary = [
+    facts.length ? `Brainpress found useful project facts: ${facts.join("; ")}.` : "",
+    done.length ? `What is done: ${done.join("; ")}.` : "",
+    broken.length ? `What needs attention: ${broken.join("; ")}.` : "",
+    next.length ? `What to do next: ${next.join("; ")}.` : "",
+  ].filter(Boolean);
+
+  return summary.join(" ") || "Brainpress found source history, but the clearest product signals are limited. Review the structured memory before saving.";
 }
 
 function conciseMemoryLines(lines: string[], limit: number) {
