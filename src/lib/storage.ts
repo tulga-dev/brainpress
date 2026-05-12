@@ -3,6 +3,11 @@
 import { initialState } from "@/lib/seed";
 import { defaultPermissionSafetyRules, ensurePermissionSafetyRules } from "@/lib/safety";
 import { buildCodexCommandPreview } from "@/lib/codex-shared";
+import { normalizeDevelopmentTask } from "@/lib/development-tasks";
+import { normalizeDevelopmentTaskResult } from "@/lib/development-task-results";
+import { normalizeProductWindow } from "@/lib/product-window";
+import { normalizeRunIssue } from "@/lib/run-agents";
+import { normalizeThinkSession } from "@/lib/think-sessions";
 import type { AgentPrompt, AgentRun, BrainpressState, BuildLog, ConsolidatedProjectMemory, Memory, Project, ProjectImport } from "@/lib/types";
 
 const storageKey = "brainpress.mvp.state.v1";
@@ -38,12 +43,16 @@ export function resetBrainpressState() {
 }
 
 function normalizeBrainpressState(state: BrainpressState): BrainpressState {
-  const projects = state.projects.map(normalizeProject);
+  const projects = ensureSeedProjects(state.projects.map(normalizeProject));
   const safetyRulesByProject = new Map(projects.map((project) => [project.id, project.safetyRules]));
   const projectIdByOutcome = new Map(state.outcomes.map((outcome) => [outcome.id, outcome.projectId]));
   const memories = Object.fromEntries(
     Object.entries(state.memories || {}).map(([projectId, memory]) => [projectId, normalizeMemory(memory, projectId)]),
   );
+  for (const project of projects) {
+    if (!memories[project.id]) memories[project.id] = normalizeMemory(initialState.memories[project.id] || emptyMemory(project.id), project.id);
+  }
+  const projectById = new Map(projects.map((project) => [project.id, project]));
 
   return {
     ...state,
@@ -52,9 +61,37 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     prompts: (state.prompts || []).map((prompt) =>
       normalizePrompt(prompt, safetyRulesByProject, projectIdByOutcome),
     ),
+    thinkSessions: (state.thinkSessions || []).map(normalizeThinkSession),
+    productWindows: (state.productWindows || []).map(normalizeProductWindow),
+    developmentTasks: (state.developmentTasks || []).map((task) => normalizeDevelopmentTask(task, projectById.get(task.projectId))),
+    developmentTaskResults: (state.developmentTaskResults || []).map(normalizeDevelopmentTaskResult),
+    runIssues: (state.runIssues || []).map(normalizeRunIssue),
     agentRuns: (state.agentRuns || []).map((run) => normalizeAgentRun(run, safetyRulesByProject.get(run.projectId))),
     buildLogs: (state.buildLogs || []).map(normalizeBuildLog),
     imports: normalizeProjectImports(state.imports || []),
+  };
+}
+
+function ensureSeedProjects(projects: Project[]) {
+  const existingIds = new Set(projects.map((project) => project.id));
+  const missingSeedProjects = initialState.projects.filter((project) => !existingIds.has(project.id)).map(normalizeProject);
+  return [...missingSeedProjects, ...projects];
+}
+
+function emptyMemory(projectId: string): Memory {
+  return {
+    projectId,
+    productSummary: "",
+    vision: "",
+    targetUsers: "",
+    currentBuildState: "",
+    technicalArchitecture: "",
+    activeDecisions: "",
+    deprecatedIdeas: "",
+    completedWork: "",
+    openQuestions: "",
+    knownIssues: "",
+    roadmap: "",
   };
 }
 

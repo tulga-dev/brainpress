@@ -30,6 +30,7 @@ export function Dashboard() {
   const router = useRouter();
   const { state, setState, reset } = useBrainpress();
   const recentOutcomes = [...state.outcomes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
+  const recentTasks = [...(state.developmentTasks || [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4);
   const recentBuildLogs = [...state.buildLogs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 4);
 
   function createProject() {
@@ -57,7 +58,7 @@ export function Dashboard() {
             </span>
             <div>
               <p className="text-sm font-semibold text-ink">Brainpress</p>
-              <p className="text-xs text-slate-500">Outcome manager for AI builders</p>
+              <p className="text-xs text-slate-500">AI development task orchestrator</p>
             </div>
           </Link>
           <div className="flex flex-wrap gap-2">
@@ -76,18 +77,18 @@ export function Dashboard() {
           <div className="py-6">
             <div className="mb-4 inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
               <Sparkles className="h-4 w-4" />
-              Core loop ready
+              Dev task loop ready
             </div>
             <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-ink sm:text-5xl">
-              Set the outcome. Brainpress manages the agent loop.
+              Create the task. Brainpress manages the Codex loop.
             </h1>
             <p className="mt-4 max-w-2xl text-lg leading-8 text-slateText">
-              Turn messy product memory into verified Codex and Claude Code work.
+              Turn messy product memory and founder intent into structured, verified software development tasks.
             </p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <Metric label="Projects" value={String(state.projects.length)} detail="Local" />
-            <Metric label="Outcomes" value={String(state.outcomes.length)} detail="Tracked" />
+            <Metric label="Dev Tasks" value={String((state.developmentTasks || []).length)} detail="Dispatch-ready" />
             <Metric label="Logs" value={String(state.buildLogs.length)} detail="Ingested" />
           </div>
         </section>
@@ -105,6 +106,36 @@ export function Dashboard() {
           </Panel>
 
           <div className="flex flex-col gap-5">
+            <Panel>
+              <PanelBody>
+                <SectionHeader title="Recent Development Tasks" eyebrow="Codex dispatch" />
+                {recentTasks.length ? (
+                  <div className="space-y-3">
+                    {recentTasks.map((task) => {
+                      const project = state.projects.find((item) => item.id === task.projectId);
+                      return (
+                        <Link
+                          href={`/projects/${task.projectId}`}
+                          key={task.id}
+                          className="block rounded-lg border border-line bg-white p-4 transition hover:border-electric/40 hover:shadow-sm"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-medium text-ink">{task.title}</p>
+                              <p className="mt-1 text-sm text-slate-500">{project?.name}</p>
+                            </div>
+                            <StatusPill value={task.status} />
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <EmptyState title="No development tasks yet" detail="Open Brainpress Core and paste messy intent into the Dev Agent Inbox." />
+                )}
+              </PanelBody>
+            </Panel>
+
             <Panel>
               <PanelBody>
                 <SectionHeader title="Recent Outcomes" eyebrow="Execution" />

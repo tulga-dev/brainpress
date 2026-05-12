@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/brainpress.test.ts"
+    "test": "tsx --test tests/brainpress.test.ts",
+    "bridge": "node scripts/brainpress-codex-bridge.js"
   },
   "dependencies": {
     "clsx": "2.1.1",

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
-import type { AgentRunStatus, OutcomeStatus, PromptStatus, VerificationStatus } from "@/lib/types";
+import type { AgentRunStatus, DevelopmentTaskStatus, OutcomeStatus, PromptStatus, VerificationStatus } from "@/lib/types";
 
 export function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -142,7 +142,22 @@ const agentRunTone: Record<AgentRunStatus, string> = {
   Absorbed: "border-zinc-200 bg-zinc-50 text-zinc-700",
 };
 
-export function StatusPill({ value }: { value: OutcomeStatus | PromptStatus | VerificationStatus | AgentRunStatus }) {
+const developmentTaskTone: Record<DevelopmentTaskStatus, string> = {
+  draft: "border-slate-200 bg-slate-50 text-slate-700",
+  ready_to_dispatch: "border-indigo-200 bg-indigo-50 text-indigo-700",
+  prepared_for_github: "border-blue-200 bg-blue-50 text-blue-700",
+  dispatching: "border-amber-200 bg-amber-50 text-amber-700",
+  dispatched: "border-blue-200 bg-blue-50 text-blue-700",
+  running: "border-amber-200 bg-amber-50 text-amber-700",
+  completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  needs_review: "border-violet-200 bg-violet-50 text-violet-700",
+  verified: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  failed: "border-rose-200 bg-rose-50 text-rose-700",
+  cancelled: "border-zinc-200 bg-zinc-50 text-zinc-700",
+  merged: "border-zinc-200 bg-zinc-50 text-zinc-700",
+};
+
+export function StatusPill({ value }: { value: OutcomeStatus | PromptStatus | VerificationStatus | AgentRunStatus | DevelopmentTaskStatus }) {
   const tone =
     value in outcomeTone
       ? outcomeTone[value as OutcomeStatus]
@@ -150,7 +165,9 @@ export function StatusPill({ value }: { value: OutcomeStatus | PromptStatus | Ve
         ? promptTone[value as PromptStatus]
         : value in verificationTone
           ? verificationTone[value as VerificationStatus]
-          : agentRunTone[value as AgentRunStatus];
+          : value in agentRunTone
+            ? agentRunTone[value as AgentRunStatus]
+            : developmentTaskTone[value as DevelopmentTaskStatus];
 
   return <span className={cx("inline-flex rounded-md border px-2 py-1 text-xs font-medium", tone)}>{value}</span>;
 }

@@ -24,6 +24,25 @@ export const seedProject: Project = {
   createdAt,
 };
 
+export const brainpressCoreProject: Project = {
+  id: "brainpress-core",
+  name: "Brainpress Core",
+  description: "AI software development task orchestrator.",
+  repoPathOrUrl: "",
+  preferredAgent: "Codex",
+  primaryGoal:
+    "Turn messy founder intent into structured development tasks that can be safely dispatched to Codex, reviewed, verified, and absorbed.",
+  constraints: [
+    "No autonomous merge.",
+    "No automatic production deployment.",
+    "No frontend API keys.",
+    "User approval is required before merge or deploy.",
+  ],
+  verificationCommands: ["npm run typecheck", "npm test", "npm run build"],
+  safetyRules: defaultPermissionSafetyRules,
+  createdAt,
+};
+
 export const seedMemory: Memory = {
   projectId: seedProject.id,
   productSummary:
@@ -61,6 +80,30 @@ export const seedMemory: Memory = {
   ]
     .map((item) => `- ${item}`)
     .join("\n"),
+};
+
+export const brainpressCoreMemory: Memory = {
+  projectId: brainpressCoreProject.id,
+  productSummary:
+    "Brainpress is becoming an AI software development task orchestrator that converts messy founder intent into structured, verifiable development work.",
+  vision:
+    "Give founders a safe cockpit for creating development tasks, dispatching them to Codex, reviewing results, and deciding the next action without blind approvals.",
+  targetUsers: "Founder-builders, product operators, and developers coordinating AI coding work.",
+  currentBuildState:
+    "Brainpress has project memory, PDF intake, agent runs, local verification, and a safe Codex bridge foundation. Development tasks are the next primary workflow.",
+  technicalArchitecture:
+    "Next.js App Router, TypeScript, Tailwind, localStorage persistence, server-side API routes, and placeholder coding-agent adapters.",
+  activeDecisions:
+    "- Development tasks should be structured before dispatch.\n- Dispatch adapters must stay separate from UI.\n- No API keys in frontend or localStorage.\n- User approval is required before merge or deploy.",
+  deprecatedIdeas: "- Prompt copy/paste should not be the primary Codex workflow.",
+  completedWork:
+    "- Brainpress MVP supports memory, outcomes, PDF intake, agent handoff, verification, and local Codex execution safeguards.",
+  openQuestions:
+    "- Which Codex Cloud API shape should the first real adapter use?\n- Should task state eventually live in JSON files beside the repo?",
+  knownIssues:
+    "- Direct Codex Cloud dispatch is not configured yet.\n- Task orchestration needs a structured adapter boundary before real dispatch.",
+  roadmap:
+    "- Add DevelopmentTask inbox.\n- Add Codex dispatch placeholder.\n- Add task result review.\n- Add future Codex Cloud integration.\n- Add future PR/diff review workflow.",
 };
 
 const seedOutcomeBase: Outcome = {
@@ -106,12 +149,18 @@ export const seedPrompt: AgentPrompt = {
 };
 
 export const initialState: BrainpressState = {
-  projects: [seedProject],
+  projects: [brainpressCoreProject, seedProject],
   memories: {
+    [brainpressCoreProject.id]: brainpressCoreMemory,
     [seedProject.id]: seedMemory,
   },
   outcomes: [seedOutcome],
   prompts: [seedPrompt],
+  thinkSessions: [],
+  productWindows: [],
+  developmentTasks: [],
+  developmentTaskResults: [],
+  runIssues: [],
   agentRuns: [],
   buildLogs: [],
   imports: [],

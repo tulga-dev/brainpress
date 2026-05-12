@@ -1,21 +1,115 @@
 # Brainpress MVP
 
-Brainpress is an outcome manager for AI builders. It turns messy product memory into verified Codex and Claude Code work by keeping the loop visible:
+Brainpress is becoming an AI software development task orchestrator. It turns messy product memory and founder intent into structured, verified Codex-ready work by keeping the loop visible:
 
-Project Memory -> Outcome -> Agent Prompt -> Agent Result -> Build Log -> Next Outcome
+Project Memory -> Development Task -> Codex Dispatch -> Result Review -> Verification -> Next Action
 
 ## MVP Scope
 
 - Next.js App Router, TypeScript, and Tailwind CSS.
-- Local persistence through `localStorage`.
-- No auth, database, real AI API, deployment, GitHub push, or auto-commit.
+- Local persistence through `localStorage`, with a Supabase-backed cloud store foundation for hosted use.
+- Optional Supabase Auth and Postgres persistence for cross-device projects.
+- Server-side OpenAI and GitHub integrations when configured; no API keys are stored in frontend state or localStorage.
 - Seeded GensecAI demo project with memory, roadmap, verification commands, and one ready outcome.
+- Seeded Brainpress Core project for internal product development tasks.
+- DevelopmentTask system with task type, status, priority, repo/branch, context, affected areas, acceptance criteria, verification commands, QA steps, dispatch target, result, PR URL, and status history.
+- Codex Goal Function generation: every development task can store a durable `/goal` objective with target outcome, validation loop, permission-safe guidance, required checks, and final summary format.
+- Dev Agent Inbox for turning messy bug reports, feature requests, QA notes, build logs, or Codex results into structured tasks.
+- Server-side Codex adapter placeholder. If Codex Cloud/CLI dispatch is not configured, Brainpress says so clearly and does not pretend a run happened.
 - Heuristic memory parser for decisions, completed work, known issues, roadmap items, and technical signals.
 - Outcome plan generation and agent-ready prompt generation.
 - Agent result ingestion into structured build logs.
 - Project settings for repo path, preferred agent, constraints, and verification commands.
 - Founder-safe Permission Safety Rules included in every generated prompt and handoff package.
 - PDF Intake for Project Memory: upload many text-based PDFs over time, extract page text, save each PDF as a source, rebuild one founder-friendly roadmap dashboard, keep raw source collapsed, and create suggested outcomes.
+
+## Hosted Cross-Device Setup
+
+Brainpress can run locally without cloud configuration, but hosted phone/computer usage is designed for Vercel + Supabase:
+
+1. Create a Supabase project.
+2. Run the schema in [`docs/SUPABASE_SCHEMA.sql`](docs/SUPABASE_SCHEMA.sql) from the Supabase SQL editor.
+3. Add these variables locally and in Vercel:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+OPENAI_API_KEY=
+BRAINPRESS_OPENAI_MODEL=
+BRAINPRESS_GITHUB_TOKEN=
+```
+
+`SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `BRAINPRESS_GITHUB_TOKEN`, and `GITHUB_TOKEN` are server-side only. Do not prefix them with `NEXT_PUBLIC_`.
+
+When Supabase is configured, Brainpress shows a sign-in card in the workspace header. Signed-in users see **Cloud synced** and their projects, Think sessions, Product Windows, Build tasks, task results, and Run issues are saved to Supabase Postgres under RLS. If Supabase is missing or the user is signed out, Brainpress keeps working in **Local only** mode through `localStorage`.
+
+### Vercel Deployment
+
+Recommended Vercel settings:
+
+- Framework: Next.js
+- Root Directory: empty, if `package.json` is at repository root
+- Install Command: `npm install`
+- Build Command: `npm run build`
+- Output Directory: empty
+- Node: 20.x or 22.x
+
+### Phone Workflow
+
+On phone, Brainpress keeps the Think / Build / Run model but uses compact segmented views:
+
+- Think: Chat / Canvas
+- Build: Chat / Tasks / task detail through a compact task rail and canvas
+- Run: Chat / Ops Board
+
+GitHub Dispatch is the default phone-safe handoff. It can create a GitHub issue server-side when `BRAINPRESS_GITHUB_TOKEN` or `GITHUB_TOKEN` is configured; otherwise Brainpress generates a copyable issue package. Local Bridge remains available as a desktop-only option when a local repo and `http://localhost:4317` bridge are running.
+
+## Development Tasks And Codex Dispatch
+
+Brainpress now treats coding-agent work as a structured **DevelopmentTask**, not as a copy/paste prompt-first workflow. The Dev Tasks tab includes:
+
+- a Dev Agent Inbox for messy founder intent
+- a task detail view with repo, branch, type, priority, context, affected areas, acceptance criteria, verification commands, manual QA, constraints, dispatch target, PR URL, result import, and status history
+- a primary **Send to Codex** action
+- a durable **Codex Goal Function** with Copy and Regenerate actions
+- a result review area that stores raw results, summarizes them, and compares them against acceptance criteria
+
+The Codex dispatch layer is intentionally separated from task creation. `CodingAgentAdapter` defines `createTask`, `getTaskStatus`, and `getTaskResult`; `CodexAdapter` currently provides a safe placeholder boundary. No Codex API key is stored in frontend state or localStorage. Direct Codex Cloud/CLI dispatch remains a TODO integration step, and Brainpress does not auto-merge, auto-deploy, push, or hide destructive actions.
+
+The `/goal` output is intentionally founder-safe and execution-focused. It tells Codex what outcome to reach, what to validate, what commands to run, when to stop for founder input, and how to summarize changed files, verification results, risks, remaining issues, and next tasks.
+
+## Local Codex Bridge
+
+Brainpress can now dispatch a `DevelopmentTask` to a local bridge service before full Codex automation exists. The default bridge URL is:
+
+```text
+http://localhost:4317
+```
+
+Start the reference bridge with:
+
+```bash
+npm run bridge
+```
+
+The reference bridge supports:
+
+- `GET /health`
+- `POST /tasks`
+- `GET /tasks/:id`
+- `GET /tasks/:id/result`
+
+When Brainpress sends a task, the bridge writes a package into the selected local repo:
+
+```text
+.brainpress/tasks/<task-id>/
+  task.json
+  task.md
+  status.json
+  result.md
+```
+
+This first bridge version does **not** invoke Codex CLI automatically. It only packages the task and returns a local run ID. Future bridge versions can add explicit, approval-gated Codex CLI execution. If the bridge is not running, Brainpress shows "Local Codex Bridge is not running." and keeps the task ready to dispatch.
 
 ## Founder-Safe Permissions
 
@@ -175,6 +269,12 @@ All other commands are rejected before execution. URLs and network paths are rej
 ## Demo Data
 
 The seeded project is **GensecAI**, an AI command center for SMEs. Its first outcome is **Improve GensecAI PC Center Dashboard**, focused on making PC center operations intelligence clean, premium, and owner-grade.
+
+## OpenAI Agent Gateway
+
+Think, Build, and Run can optionally use a server-side OpenAI gateway for structured agent responses. Set `OPENAI_API_KEY` in `.env.local` to enable Live AI responses, and optionally set `BRAINPRESS_OPENAI_MODEL` to override the default model.
+
+If the key is missing, the request fails, or the model returns malformed JSON, Brainpress falls back to the deterministic local engines. The UI labels each generated Think session, Build task, and Run review as either **Live AI** or **Local fallback**. The browser never receives the OpenAI key and the gateway never dispatches or executes code automatically.
 
 ## Run Locally
 

@@ -304,8 +304,8 @@ export function AgentRunsTab({
                   }
                 />
                 <div className="space-y-3">
-                  {selectedRun.verificationCommands.map((command) => (
-                    <label key={command} className="flex items-center gap-3 rounded-lg border border-line bg-white p-3 text-sm text-ink">
+                  {selectedRun.verificationCommands.map((command, index) => (
+                    <label key={`verification-command-${selectedRun.id}-${index}-${command}`} className="flex items-center gap-3 rounded-lg border border-line bg-white p-3 text-sm text-ink">
                       <input
                         type="checkbox"
                         className="h-4 w-4 rounded border-line text-electric"
@@ -333,8 +333,8 @@ export function AgentRunsTab({
                   <p className="mb-3 font-medium text-ink">{summarizeVerificationResults(selectedRun.verificationResults)}</p>
                   {selectedRun.verificationResults.length ? (
                     <div className="space-y-3">
-                      {selectedRun.verificationResults.map((result) => (
-                        <details key={result.command} className="rounded-lg border border-line bg-mist p-3">
+                      {selectedRun.verificationResults.map((result, index) => (
+                        <details key={`verification-result-${selectedRun.id}-${index}-${result.command}`} className="rounded-lg border border-line bg-mist p-3">
                           <summary className="cursor-pointer text-sm font-medium text-ink">
                             <span className="mr-2 inline-flex items-center gap-1">
                               {result.status === "passed" ? (
@@ -477,8 +477,8 @@ function DirectCodexPanel({
             "6. Run verification",
             "7. Ingest result",
             "8. Absorb after review",
-          ].map((step) => (
-            <div key={step} className="rounded-md border border-line bg-white px-3 py-2 text-xs font-medium text-slateText">
+          ].map((step, index) => (
+            <div key={`codex-bridge-step-${index}-${step}`} className="rounded-md border border-line bg-white px-3 py-2 text-xs font-medium text-slateText">
               {step}
             </div>
           ))}

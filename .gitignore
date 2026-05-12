@@ -2,7 +2,13 @@ node_modules
 .next
 .tools
 out
+dist
+coverage
 *.log
 .env*
+.env.local
+.env*.local
 !.env.example
 *.tsbuildinfo
+
+.vercel

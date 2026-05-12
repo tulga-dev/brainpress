@@ -7,6 +7,51 @@ import {
   createVerificationRepairOutcome,
   generateHandoffPackage,
 } from "../src/lib/agent-runs";
+import { CodexAdapter, defaultLocalCodexBridgeUrl, LocalCodexBridgeAdapter } from "../src/lib/coding-agent-adapter";
+import { generateCodexGoalObjective } from "../src/lib/codex-goal";
+import {
+  callBrainpressAgent,
+  normalizeAgentResponse,
+  shouldUseOpenAI,
+} from "../src/lib/agent-gateway";
+import {
+  LocalStorageBrainpressStore,
+  loadStateFromStore,
+  selectBrainpressStore,
+  SupabaseBrainpressStore,
+} from "../src/lib/brainpress-store";
+import { runBrainpressAgent } from "../src/lib/server/agent-gateway";
+import {
+  compareResultToAcceptanceCriteria,
+  createDevelopmentTaskFromIntent,
+  defaultDispatchMode,
+  defaultDispatchTarget,
+  developmentStatusFromCodingAgentStatus,
+  normalizeDevelopmentTask,
+  updateDevelopmentTaskResult,
+  updateDevelopmentTaskStatus,
+} from "../src/lib/development-tasks";
+import {
+  applyRecommendedDevelopmentTaskStatus,
+  parseDevelopmentTaskResult,
+} from "../src/lib/development-task-results";
+import { createDevelopmentTaskFromRunIssue, createRunIssue } from "../src/lib/run-agents";
+import {
+  createDevelopmentTaskFromThinkRecommendation,
+  createThinkSession,
+  normalizeThinkSession,
+} from "../src/lib/think-sessions";
+import {
+  createDevelopmentTaskFromProductWindow,
+  createProductWindowFromThinkSession,
+  inferProductWindowPreviewType,
+} from "../src/lib/product-window";
+import {
+  applyGithubDispatchResult,
+  createGithubIssueBody,
+  createGithubIssueTitle,
+  prepareGithubDispatch,
+} from "../src/lib/github-dispatch";
 import {
   analyzeMemoryInput,
   analyzeProjectHistory,
@@ -62,9 +107,49 @@ import {
 } from "../src/lib/run-events";
 import { defaultPermissionSafetyRules } from "../src/lib/safety";
 import { cancelActiveCodexRun, emptyRunLogs, getRunLogPaths, validateRunLogPath } from "../src/lib/server-run-logs";
-import { initialState, seedMemory, seedOutcome, seedProject } from "../src/lib/seed";
+import { brainpressCoreMemory, brainpressCoreProject, initialState, seedMemory, seedOutcome, seedProject } from "../src/lib/seed";
 import { loadBrainpressState } from "../src/lib/storage";
 import { validateVerificationCommands } from "../src/lib/verification";
+
+function sourceBetween(source: string, startMarker: string, endMarker: string) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1, `Missing source marker: ${startMarker}`);
+  assert.notEqual(end, -1, `Missing source marker: ${endMarker}`);
+  return source.slice(start, end);
+}
+
+async function withMockLocalStorage<T>(callback: () => T | Promise<T>): Promise<T> {
+  const globals = globalThis as unknown as { window?: unknown };
+  const previousWindow = globals.window;
+  const storage = new Map<string, string>();
+  globals.window = {
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+      clear: () => storage.clear(),
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size;
+      },
+    },
+  };
+
+  try {
+    return await callback();
+  } finally {
+    if (previousWindow === undefined) {
+      delete globals.window;
+    } else {
+      globals.window = previousWindow;
+    }
+  }
+}
 
 test("heuristic parser organizes decisions, completed work, issues, and roadmap", () => {
   const result = analyzeMemoryInput(
@@ -180,6 +265,1077 @@ test("new projects default safetyRules correctly", () => {
   const project = createBlankProject("2026-05-11T00:00:00.000Z");
 
   assert.equal(project.safetyRules, defaultPermissionSafetyRules);
+});
+
+test("Brainpress Core project is available for internal development tasks", () => {
+  assert.equal(brainpressCoreProject.name, "Brainpress Core");
+  assert.equal(initialState.projects.some((project) => project.id === brainpressCoreProject.id), true);
+  assert.match(brainpressCoreMemory.productSummary, /development task orchestrator/i);
+});
+
+test("messy multi-PDF bug intent creates a ready DevelopmentTask", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+
+  assert.equal(task.projectId, brainpressCoreProject.id);
+  assert.equal(task.taskType, "bug_fix");
+  assert.equal(task.status, "ready_to_dispatch");
+  assert.deepEqual(task.affectedAreas, [
+    "PDF upload/import flow",
+    "source memory persistence",
+    "localStorage hydration",
+    "consolidated memory rebuild",
+  ]);
+  assert.match(task.acceptanceCriteria.join("\n"), /PDF A and PDF B save separately/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /Same-name PDFs save separately/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /Reload preserves both/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /Consolidated memory count matches saved source count/i);
+  assert.deepEqual(task.verificationCommands, ["npm run typecheck", "npm test", "npm run build"]);
+  assert.equal(task.dispatchTarget, "github_issue");
+  assert.match(task.codexGoal, /^\/goal Continue building Brainpress Core\./);
+  assert.match(task.codexGoal, /PDF A and PDF B save separately/i);
+  assert.match(task.codexGoal, /browser verification/i);
+});
+
+test("founder input creates a structured ThinkSession", () => {
+  const session = createThinkSession({
+    input: "I want Brainpress to help non-technical founders manage Codex without copy-pasting prompts.",
+    mode: "open_thinking",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+
+  assert.equal(session.projectId, brainpressCoreProject.id);
+  assert.equal(session.status, "generated");
+  assert.equal(session.mode, "open_thinking");
+  assert.equal(session.artifactType, "product_brief");
+  assert.match(session.summary, /product brief direction/i);
+  assert.match(session.productDirection, /Brainpress Core should/i);
+  assert.match(session.targetUser, /founders/i);
+  assert.ok(session.mvpScope.length > 0);
+  assert.ok(session.risks.length > 0);
+  assert.ok(session.openQuestions.length > 0);
+  assert.ok(session.recommendedBuildTasks.length >= 1);
+});
+
+test("Think quick action mode and artifact card type are stored", () => {
+  const session = createThinkSession({
+    input: "Define the smallest useful MVP for founder product direction.",
+    mode: "define_mvp",
+    artifactType: "feature_spec",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+
+  assert.equal(session.mode, "define_mvp");
+  assert.equal(session.artifactType, "feature_spec");
+  assert.match(session.mvpScope.join("\n"), /first version|first useful|one clear founder workflow/i);
+  assert.match(session.featureIdeas.join("\n"), /build-ready feature spec/i);
+});
+
+test("ThinkSession normalization preserves generated artifacts for legacy storage", () => {
+  const normalized = normalizeThinkSession({
+    id: "think_legacy",
+    projectId: brainpressCoreProject.id,
+    input: "Plan roadmap for Brainpress.",
+    mode: "plan_roadmap",
+    artifactType: "roadmap",
+    recommendedBuildTasks: [
+      {
+        title: "Implement first roadmap item",
+        taskType: "feature",
+        priority: "high",
+        reason: "Roadmap needs one build step.",
+        acceptanceCriteria: ["First roadmap item is visible."],
+      },
+    ],
+  });
+
+  assert.equal(normalized.id, "think_legacy");
+  assert.equal(normalized.mode, "plan_roadmap");
+  assert.equal(normalized.artifactType, "roadmap");
+  assert.equal(normalized.status, "generated");
+  assert.equal(normalized.recommendedBuildTasks[0].title, "Implement first roadmap item");
+});
+
+test("recommended Think build task becomes a ready DevelopmentTask", () => {
+  const session = createThinkSession({
+    input: "Create a feature spec for turning founder thinking into Build tasks.",
+    mode: "create_feature_spec",
+    artifactType: "feature_spec",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const task = createDevelopmentTaskFromThinkRecommendation({
+    session,
+    recommendation: session.recommendedBuildTasks[0],
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:01:00.000Z",
+  });
+
+  assert.equal(task.sourceThinkSessionId, session.id);
+  assert.equal(task.status, "ready_to_dispatch");
+  assert.equal(task.title, session.recommendedBuildTasks[0].title);
+  assert.match(task.context.join("\n"), /Think session:/i);
+  assert.match(task.codexGoal, /^\/goal Continue building Brainpress Core\./);
+});
+
+test("ProductWindow is created from a ThinkSession", () => {
+  const session = createThinkSession({
+    input: "I want an agent workspace where founders can decide what Codex should build next.",
+    mode: "clarify_idea",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const productWindow = createProductWindowFromThinkSession({
+    session,
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:01:00.000Z",
+  });
+
+  assert.equal(productWindow.projectId, brainpressCoreProject.id);
+  assert.equal(productWindow.thinkSessionId, session.id);
+  assert.equal(productWindow.title, "Brainpress Agent Workspace");
+  assert.equal(productWindow.route, "/projects/brainpress-core");
+  assert.equal(productWindow.previewType, "agent_console");
+  assert.equal(productWindow.primaryCTA, "Think with Brainpress");
+  assert.ok(productWindow.sections.length >= 5);
+  assert.ok(productWindow.userFlow.length >= 4);
+  assert.equal(productWindow.status, "generated");
+});
+
+test("ProductWindow preview type inference covers common product surfaces", () => {
+  assert.equal(inferProductWindowPreviewType("agent task orchestrator codex workspace"), "agent_console");
+  assert.equal(inferProductWindowPreviewType("analytics dashboard with metrics reporting"), "dashboard");
+  assert.equal(inferProductWindowPreviewType("marketing homepage landing page"), "landing_page");
+  assert.equal(inferProductWindowPreviewType("onboarding setup first use flow"), "onboarding");
+});
+
+test("ProductWindow includes route, primary CTA, sections, and user flow", () => {
+  const session = createThinkSession({
+    input: "Create an onboarding first use flow for founders setting up Brainpress.",
+    mode: "define_mvp",
+    artifactType: "mvp_scope",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const productWindow = createProductWindowFromThinkSession({ session, project: brainpressCoreProject });
+
+  assert.match(productWindow.route, /\/projects\/brainpress-core/);
+  assert.ok(productWindow.primaryCTA.length > 0);
+  assert.ok(productWindow.sections.some((section) => section.componentType === "input_console"));
+  assert.ok(productWindow.sections.some((section) => /Product Window/i.test(section.title)));
+  assert.match(productWindow.userFlow.join("\n"), /Founder describes the idea/i);
+  assert.match(productWindow.uiPrinciples.join("\n"), /Founder-friendly language/i);
+});
+
+test("Create Build Task from Product Window creates a linked DevelopmentTask", () => {
+  const session = createThinkSession({
+    input: "Show Brainpress as an agent workspace before building the UI.",
+    mode: "create_feature_spec",
+    artifactType: "feature_spec",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const productWindow = createProductWindowFromThinkSession({
+    session,
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:01:00.000Z",
+  });
+  const task = createDevelopmentTaskFromProductWindow({
+    productWindow,
+    session,
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:02:00.000Z",
+  });
+
+  assert.equal(task.sourceThinkSessionId, session.id);
+  assert.equal(task.sourceProductWindowId, productWindow.id);
+  assert.equal(task.status, "ready_to_dispatch");
+  assert.match(task.title, /Build Brainpress Agent Workspace preview/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /primary CTA is visible/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /npm run typecheck passes/i);
+  assert.match(task.context.join("\n"), /Concept note: Product Window is a thinking artifact/i);
+  assert.match(task.codexGoal, /^\/goal Continue building Brainpress Core\./);
+});
+
+test("GitHub Dispatch creates issue title and body from DevelopmentTask", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Fix multi-PDF source persistence and prove both PDFs remain saved.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const title = createGithubIssueTitle(task);
+  const body = createGithubIssueBody(task, brainpressCoreProject);
+
+  assert.equal(title, `[Brainpress] ${task.title}`);
+  assert.match(body, /# Brainpress Development Task/);
+  assert.match(body, /## Goal/);
+  assert.match(body, /\/goal Continue building Brainpress Core\./);
+  assert.match(body, /## Acceptance Criteria/);
+  assert.match(body, /- \[ \] /);
+  assert.match(body, /## Verification Commands/);
+  assert.match(body, /```bash\nnpm run typecheck\nnpm test\nnpm run build\n```/);
+  assert.match(body, /## Expected Final Summary/);
+  assert.match(body, /Changed files/);
+  assert.match(body, new RegExp(`Task ID: ${task.id}`));
+});
+
+test("GitHub Dispatch issue body includes Product Window source metadata", () => {
+  const session = createThinkSession({
+    input: "Show Brainpress as an agent workspace before building the UI.",
+    project: brainpressCoreProject,
+  });
+  const productWindow = createProductWindowFromThinkSession({ session, project: brainpressCoreProject });
+  const task = createDevelopmentTaskFromProductWindow({
+    productWindow,
+    session,
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const body = createGithubIssueBody(task, brainpressCoreProject);
+
+  assert.match(body, new RegExp(`Think Session ID: ${session.id}`));
+  assert.match(body, new RegExp(`Product Window ID: ${productWindow.id}`));
+  assert.match(body, /The primary CTA is visible/);
+});
+
+test("GitHub Dispatch prepares repository, title, body, and guidance", () => {
+  const task = {
+    ...createDevelopmentTaskFromIntent({
+      input: "Create GitHub dispatch package.",
+      project: brainpressCoreProject,
+      memory: brainpressCoreMemory,
+    }),
+    repo: "https://github.com/tulga-dev/brainpress.git",
+  };
+  const prepared = prepareGithubDispatch(task, brainpressCoreProject);
+
+  assert.equal(prepared.repository, "tulga-dev/brainpress");
+  assert.equal(prepared.issueTitle, `[Brainpress] ${task.title}`);
+  assert.match(prepared.issueBody, /Brainpress Metadata/);
+  assert.match(prepared.guidance, /tag @codex/i);
+});
+
+test("GitHub Dispatch status is honest for created issues and copy fallback", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Create GitHub dispatch package.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const copied = applyGithubDispatchResult(
+    task,
+    { configured: false, message: "GitHub issue body copied." },
+    "2026-05-12T00:01:00.000Z",
+  );
+  const dispatched = applyGithubDispatchResult(
+    task,
+    {
+      configured: true,
+      issueUrl: "https://github.com/tulga-dev/brainpress/issues/7",
+      issueNumber: 7,
+      message: "GitHub issue created.",
+    },
+    "2026-05-12T00:02:00.000Z",
+  );
+
+  assert.equal(copied.status, "prepared_for_github");
+  assert.equal(copied.externalRunUrl, undefined);
+  assert.equal(dispatched.status, "dispatched");
+  assert.equal(dispatched.externalRunUrl, "https://github.com/tulga-dev/brainpress/issues/7");
+});
+
+test("Agent Gateway normalizes structured OpenAI-style Think responses", async () => {
+  const fetcher: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        ok: true,
+        source: "openai",
+        surface: "think",
+        model: "gpt-test",
+        result: {
+          summary: "Brainpress should help founders think clearly before building.",
+          productDirection: "Create a Think-first agentic workspace.",
+          userProblem: "Founders cannot translate messy product ideas into buildable work.",
+          targetUser: "Non-technical founders using coding agents.",
+          proposedSolution: "Guide the founder from product direction to Build tasks.",
+          mvpScope: ["Capture messy input.", "Produce buildable direction."],
+          featureIdeas: ["Live AI co-thinking."],
+          decisions: ["Keep deterministic fallback."],
+          risks: ["AI output could be vague."],
+          openQuestions: ["Which model should be default?"],
+          recommendedBuildTasks: [
+            {
+              title: "Add Live AI badge",
+              taskType: "feature",
+              priority: "medium",
+              reason: "Founders need to know whether the response came from AI.",
+              acceptanceCriteria: ["Live AI responses show a badge."],
+            },
+          ],
+          productWindowSuggestion: {
+            title: "Brainpress Think Workspace",
+            route: "/projects/brainpress-core",
+            primaryCTA: "Think with Brainpress",
+            sections: ["Hero", "Input console"],
+          },
+        },
+      }),
+    );
+
+  const response = await callBrainpressAgent(
+    {
+      surface: "think",
+      input: "Help me shape Brainpress.",
+      project: brainpressCoreProject,
+    },
+    { fetcher },
+  );
+
+  assert.equal(response.source, "openai");
+  assert.equal(response.model, "gpt-test");
+  assert.match((response.result as { summary: string }).summary, /founders think clearly/i);
+  assert.equal((response.result as { recommendedBuildTasks: unknown[] }).recommendedBuildTasks.length, 1);
+});
+
+test("Agent Gateway falls back for Think, Build, and Run when OPENAI_API_KEY is missing", async () => {
+  assert.equal(shouldUseOpenAI({}), false);
+
+  const think = await runBrainpressAgent(
+    { surface: "think", input: "Clarify Brainpress as a product OS.", project: brainpressCoreProject },
+    { env: {} },
+  );
+  const build = await runBrainpressAgent(
+    { surface: "build", input: "Fix failed build and run typecheck.", project: brainpressCoreProject },
+    { env: {} },
+  );
+  const run = await runBrainpressAgent(
+    { surface: "run", input: "Supabase login is broken in Vercel production.", project: brainpressCoreProject },
+    { env: {} },
+  );
+
+  assert.equal(think.source, "fallback");
+  assert.match((think.result as { summary: string }).summary, /Brainpress/i);
+  assert.equal(build.source, "fallback");
+  assert.match((build.result as { title: string }).title, /Repair|Fix/i);
+  assert.equal(run.source, "fallback");
+  assert.equal((run.result as { provider?: string }).provider, "supabase");
+});
+
+test("Agent Gateway falls back safely when OpenAI output is malformed", async () => {
+  const fetcher: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({ summary: "Missing required structured fields." }),
+      }),
+    );
+
+  const response = await runBrainpressAgent(
+    {
+      surface: "build",
+      input: "Create a GitHub dispatch package.",
+      project: brainpressCoreProject,
+    },
+    {
+      env: { OPENAI_API_KEY: "sk-test", BRAINPRESS_OPENAI_MODEL: "gpt-test" },
+      fetcher,
+    },
+  );
+
+  assert.equal(response.source, "fallback");
+  assert.match(response.error || "", /malformed/i);
+  assert.match((response.result as { title: string }).title, /GitHub dispatch/i);
+});
+
+test("Agent Gateway rejects malformed client payloads during normalization", () => {
+  const malformed = normalizeAgentResponse("run", {
+    ok: true,
+    source: "openai",
+    surface: "run",
+    result: {
+      type: "vercel",
+      title: "Broken deploy",
+      summary: "Deployment needs review.",
+      recommendedSteps: [],
+    },
+  });
+
+  assert.equal(malformed, null);
+});
+
+test("Agent Gateway keeps OpenAI key server-side and avoids public env names", () => {
+  const routeSource = readFileSync("app/api/brainpress/agent/route.ts", "utf8");
+  const gatewaySource = readFileSync("src/lib/agent-gateway.ts", "utf8");
+  const serverGatewaySource = readFileSync("src/lib/server/agent-gateway.ts", "utf8");
+  const workspaceSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+
+  assert.match(serverGatewaySource, /OPENAI_API_KEY/);
+  assert.match(serverGatewaySource, /Authorization/);
+  assert.match(routeSource, /runBrainpressAgent/);
+  assert.doesNotMatch(gatewaySource, /Authorization: `Bearer/);
+  assert.doesNotMatch(gatewaySource, /https:\/\/api\.openai\.com/);
+  assert.doesNotMatch(`${gatewaySource}\n${workspaceSource}`, /NEXT_PUBLIC_OPENAI_API_KEY/);
+  assert.doesNotMatch(workspaceSource, /OPENAI_API_KEY/);
+});
+
+test("Brainpress store selects Supabase when authenticated and local fallback otherwise", () => {
+  const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const previousKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://brainpress.supabase.co";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon_test";
+
+  const localSelection = selectBrainpressStore(null);
+  const cloudSelection = selectBrainpressStore({
+    accessToken: "access",
+    refreshToken: "refresh",
+    user: { id: "user_123", email: "founder@example.com" },
+  });
+
+  assert.equal(localSelection.store.mode, "local");
+  assert.equal(localSelection.sourceLabel, "Local workspace");
+  assert.match(localSelection.reason, /Working locally/);
+  assert.equal(cloudSelection.store.mode, "cloud");
+  assert.equal(cloudSelection.sourceLabel, "Cloud synced");
+
+  process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previousKey;
+});
+
+test("signed-out Local workspace can create Think, Build, Run, and GitHub copy handoff", async () => {
+  await withMockLocalStorage(async () => {
+    const store = new LocalStorageBrainpressStore();
+    const thinkSession = createThinkSession({
+      input: "I want Brainpress to work locally without forcing sign-in.",
+      mode: "clarify_idea",
+      artifactType: "product_brief",
+      project: brainpressCoreProject,
+      now: "2026-05-12T00:00:00.000Z",
+    });
+    const productWindow = createProductWindowFromThinkSession({
+      session: thinkSession,
+      project: brainpressCoreProject,
+      now: "2026-05-12T00:01:00.000Z",
+    });
+    const task = createDevelopmentTaskFromProductWindow({
+      productWindow,
+      session: thinkSession,
+      project: brainpressCoreProject,
+      memory: brainpressCoreMemory,
+      now: "2026-05-12T00:02:00.000Z",
+    });
+    const runIssue = createRunIssue({
+      projectId: brainpressCoreProject.id,
+      input: "Supabase login works locally but fails on Vercel production.",
+      now: "2026-05-12T00:03:00.000Z",
+    });
+
+    await store.saveThinkSession(thinkSession);
+    await store.saveProductWindow(productWindow);
+    await store.saveDevelopmentTask(task);
+    await store.saveRunIssue(runIssue);
+
+    const reloaded = await loadStateFromStore(store);
+    assert.equal(reloaded.thinkSessions.some((item) => item.id === thinkSession.id), true);
+    assert.equal(reloaded.productWindows.some((item) => item.id === productWindow.id), true);
+    assert.equal(reloaded.developmentTasks.some((item) => item.id === task.id), true);
+    assert.equal(reloaded.runIssues.some((item) => item.id === runIssue.id), true);
+
+    const githubDispatch = prepareGithubDispatch(task, brainpressCoreProject);
+    assert.match(githubDispatch.issueBody, /Brainpress Development Task/);
+    const copied = applyGithubDispatchResult(task, {
+      configured: false,
+      message: "GitHub issue body copied locally.",
+    });
+    assert.equal(copied.status, "prepared_for_github");
+  });
+});
+
+test("SupabaseBrainpressStore saves and loads core Brainpress entities", async () => {
+  const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const previousKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://brainpress.supabase.co";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon_test";
+  const savedTables: string[] = [];
+  const thinkSession = createThinkSession({
+    input: "Build a phone-friendly Brainpress workspace.",
+    mode: "clarify_idea",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const productWindow = createProductWindowFromThinkSession({ session: thinkSession, project: brainpressCoreProject });
+  const developmentTask = createDevelopmentTaskFromThinkRecommendation({
+    session: thinkSession,
+    recommendation: thinkSession.recommendedBuildTasks[0],
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const runIssue = createRunIssue({
+    projectId: brainpressCoreProject.id,
+    input: "Vercel production deploy failed because env vars are missing.",
+    now: "2026-05-12T00:00:00.000Z",
+  });
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "POST") {
+      savedTables.push(url.split("/rest/v1/")[1]?.split("?")[0] || "unknown");
+      return new Response("[]", { status: 201 });
+    }
+    if (url.includes("/projects")) {
+      return Response.json([{
+        id: brainpressCoreProject.id,
+        owner_id: "user_123",
+        name: brainpressCoreProject.name,
+        description: brainpressCoreProject.description,
+        repo_path_or_url: brainpressCoreProject.repoPathOrUrl,
+        preferred_agent: brainpressCoreProject.preferredAgent,
+        primary_goal: brainpressCoreProject.primaryGoal,
+        constraints: brainpressCoreProject.constraints,
+        verification_commands: brainpressCoreProject.verificationCommands,
+        safety_rules: brainpressCoreProject.safetyRules,
+        created_at: brainpressCoreProject.createdAt,
+        updated_at: brainpressCoreProject.createdAt,
+      }]);
+    }
+    if (url.includes("/think_sessions")) return Response.json([{
+      id: thinkSession.id,
+      project_id: thinkSession.projectId,
+      title: thinkSession.title,
+      input: thinkSession.input,
+      mode: thinkSession.mode,
+      artifact_type: thinkSession.artifactType,
+      summary: thinkSession.summary,
+      product_direction: thinkSession.productDirection,
+      user_problem: thinkSession.userProblem,
+      target_user: thinkSession.targetUser,
+      proposed_solution: thinkSession.proposedSolution,
+      mvp_scope: thinkSession.mvpScope,
+      feature_ideas: thinkSession.featureIdeas,
+      decisions: thinkSession.decisions,
+      risks: thinkSession.risks,
+      open_questions: thinkSession.openQuestions,
+      recommended_build_tasks: thinkSession.recommendedBuildTasks,
+      status: thinkSession.status,
+      created_at: thinkSession.createdAt,
+      updated_at: thinkSession.updatedAt,
+    }]);
+    if (url.includes("/product_windows")) return Response.json([{
+      id: productWindow.id,
+      project_id: productWindow.projectId,
+      think_session_id: productWindow.thinkSessionId,
+      title: productWindow.title,
+      route: productWindow.route,
+      preview_type: productWindow.previewType,
+      user_scenario: productWindow.userScenario,
+      screen_description: productWindow.screenDescription,
+      primary_cta: productWindow.primaryCTA,
+      sections: productWindow.sections,
+      ui_principles: productWindow.uiPrinciples,
+      user_flow: productWindow.userFlow,
+      open_questions: productWindow.openQuestions,
+      status: productWindow.status,
+      created_at: productWindow.createdAt,
+      updated_at: productWindow.updatedAt,
+    }]);
+    if (url.includes("/development_tasks")) return Response.json([{
+      id: developmentTask.id,
+      project_id: developmentTask.projectId,
+      title: developmentTask.title,
+      description: developmentTask.description,
+      task_type: developmentTask.taskType,
+      status: developmentTask.status,
+      priority: developmentTask.priority,
+      repo: developmentTask.repo,
+      branch: developmentTask.branch,
+      context: developmentTask.context,
+      affected_areas: developmentTask.affectedAreas,
+      acceptance_criteria: developmentTask.acceptanceCriteria,
+      verification_commands: developmentTask.verificationCommands,
+      manual_qa_steps: developmentTask.manualQaSteps,
+      constraints: developmentTask.constraints,
+      dispatch_target: developmentTask.dispatchTarget,
+      dispatch_mode: developmentTask.dispatchMode,
+      codex_goal: developmentTask.codexGoal,
+      result_summary: developmentTask.resultSummary,
+      result_raw: developmentTask.resultRaw,
+      status_history: developmentTask.statusHistory,
+      created_at: developmentTask.createdAt,
+      updated_at: developmentTask.updatedAt,
+    }]);
+    if (url.includes("/development_task_results")) return Response.json([]);
+    if (url.includes("/run_issues")) return Response.json([{
+      id: runIssue.id,
+      project_id: runIssue.projectId,
+      type: runIssue.type,
+      title: runIssue.title,
+      summary: runIssue.summary,
+      provider: runIssue.provider,
+      likely_causes: runIssue.likelyCauses,
+      recommended_steps: runIssue.recommendedSteps,
+      verification_steps: runIssue.verificationSteps,
+      required_access: runIssue.requiredAccess,
+      risks: runIssue.risks,
+      recommended_build_tasks: runIssue.recommendedBuildTasks,
+      created_at: runIssue.createdAt,
+      updated_at: runIssue.createdAt,
+    }]);
+    return Response.json([]);
+  }) as typeof fetch;
+
+  const store = new SupabaseBrainpressStore({
+    accessToken: "access",
+    user: { id: "user_123", email: "founder@example.com" },
+  });
+  const cloudState = await loadStateFromStore(store);
+  assert.equal(cloudState.projects[0].id, brainpressCoreProject.id);
+  assert.equal(cloudState.thinkSessions[0].id, thinkSession.id);
+  assert.equal(cloudState.productWindows[0].id, productWindow.id);
+  assert.equal(cloudState.developmentTasks[0].id, developmentTask.id);
+  assert.equal(cloudState.runIssues[0].id, runIssue.id);
+
+  await store.saveProject(brainpressCoreProject);
+  await store.saveThinkSession(thinkSession);
+  await store.saveProductWindow(productWindow);
+  await store.saveDevelopmentTask(developmentTask);
+  await store.saveRunIssue(runIssue);
+  assert.deepEqual(savedTables, ["projects", "think_sessions", "product_windows", "development_tasks", "run_issues"]);
+
+  globalThis.fetch = previousFetch;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previousKey;
+});
+
+test("SupabaseBrainpressStore does not request updated_at for result tables", async () => {
+  const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const previousKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://brainpress.supabase.co";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon_test";
+  const requestedUrls: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestedUrls.push(String(input));
+    return Response.json([]);
+  }) as typeof fetch;
+
+  const store = new SupabaseBrainpressStore({
+    accessToken: "access",
+    user: { id: "user_123", email: "founder@example.com" },
+  });
+  await store.listDevelopmentTaskResults(brainpressCoreProject.id);
+
+  const resultUrl = requestedUrls.find((url) => url.includes("/development_task_results")) || "";
+  assert.match(resultUrl, /order=created_at\.desc/);
+  assert.doesNotMatch(resultUrl, /updated_at/);
+
+  globalThis.fetch = previousFetch;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previousKey;
+});
+
+test("Cloud auth UI uses local fallback and does not expose server-only env vars to frontend", () => {
+  const workspaceSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+  const hookSource = readFileSync("src/components/brainpress/use-brainpress.ts", "utf8");
+  const supabaseBrowserSource = readFileSync("src/lib/supabase-browser.ts", "utf8");
+  const storeSource = readFileSync("src/lib/brainpress-store.ts", "utf8");
+  const clientSources = `${workspaceSource}\n${hookSource}\n${supabaseBrowserSource}\n${storeSource}`;
+
+  assert.match(clientSources, /Cloud synced/);
+  assert.match(clientSources, /Local workspace/);
+  assert.match(clientSources, /Working locally\. Sign in to sync across devices\./);
+  assert.match(workspaceSource, /Local workspace is stored on this browser only/);
+  assert.match(workspaceSource, /To use the same workspace from another device, sign in to enable cloud sync/);
+  assert.match(workspaceSource, /Dismiss/);
+  assert.match(workspaceSource, /Sign in to sync/);
+  assert.match(hookSource, /restoreSupabaseSession/);
+  assert.doesNotMatch(clientSources, /process\.env\.OPENAI_API_KEY/);
+  assert.doesNotMatch(clientSources, /process\.env\.SUPABASE_SERVICE_ROLE_KEY/);
+  assert.doesNotMatch(clientSources, /process\.env\.BRAINPRESS_GITHUB_TOKEN/);
+  assert.doesNotMatch(clientSources, /process\.env\.GITHUB_TOKEN/);
+});
+
+test("Codex Goal Function includes outcome, validation, permissions, checks, and final summary", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const goal = generateCodexGoalObjective({
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    task,
+  });
+
+  assert.match(goal.goalText, /^\/goal Continue building Brainpress Core\./);
+  assert.match(goal.targetOutcome, /Fix multi-PDF memory import persistence/i);
+  assert.match(goal.validationLoop, /acceptance criteria/i);
+  assert.match(goal.permissionGuidance, /Work only inside the selected project folder/i);
+  assert.match(goal.permissionGuidance, /Do not access secrets/i);
+  assert.deepEqual(goal.requiredChecks, [
+    "npm run typecheck",
+    "npm test",
+    "npm run build",
+    "npm run lint if available",
+    "browser verification",
+  ]);
+  assert.match(goal.goalText, /changed files, commands run, verification results/i);
+  assert.match(goal.goalText, /Stop only when the checks pass or when a blocker requires founder input/i);
+});
+
+test("DevelopmentTask status and result review preserve raw Codex result", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Fix upload multiple PDFs to memory.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const running = updateDevelopmentTaskStatus(task, "running", "Codex started.", "2026-05-12T00:01:00.000Z");
+  const reviewed = updateDevelopmentTaskResult(
+    running,
+    [
+      "Implemented fix for PDF A and PDF B save separately.",
+      "Same-name PDFs save separately.",
+      "Reload preserves both saved PDF sources.",
+      "Consolidated memory count matches saved source count.",
+      "npm run typecheck passed.",
+      "npm run build passed.",
+    ].join("\n"),
+    "2026-05-12T00:02:00.000Z",
+  );
+
+  assert.equal(running.status, "running");
+  assert.equal(reviewed.status, "needs_review");
+  assert.match(reviewed.resultRaw, /PDF A and PDF B/i);
+  assert.match(reviewed.resultSummary, /Implemented fix/i);
+  assert.equal(reviewed.statusHistory[reviewed.statusHistory.length - 1]?.status, "needs_review");
+});
+
+test("DevelopmentTask acceptance comparison reports missing criteria", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Fix upload multiple PDFs to memory.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const review = compareResultToAcceptanceCriteria("PDF A and PDF B save separately. npm run build passed.", task.acceptanceCriteria);
+
+  assert.ok(review.satisfiedCriteria.length >= 2);
+  assert.ok(review.missingCriteria.length > 0);
+});
+
+test("DevelopmentTask result parser extracts files, commands, risks, and next tasks", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Fix upload multiple PDFs to memory.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const result = parseDevelopmentTaskResult(
+    task,
+    [
+      "Summary: fixed PDF source persistence.",
+      "Files changed:",
+      "- src/lib/brainpress.ts",
+      "- src/components/brainpress/project-workspace.tsx",
+      "Commands run:",
+      "- npm run typecheck passed",
+      "- npm test passed",
+      "- npm run build failed with a route error",
+      "Risks:",
+      "- localStorage migration needs founder browser verification.",
+      "Next:",
+      "- Fix build failure and retry.",
+    ].join("\n"),
+    "local_bridge",
+  );
+
+  assert.deepEqual(result.changedFiles.slice(0, 2), [
+    "src/lib/brainpress.ts",
+    "src/components/brainpress/project-workspace.tsx",
+  ]);
+  assert.equal(result.verificationResults.find((item) => item.command === "npm run typecheck")?.status, "passed");
+  assert.equal(result.verificationResults.find((item) => item.command === "npm run build")?.status, "failed");
+  assert.match(result.risks.join("\n"), /localStorage migration/i);
+  assert.match(result.nextTasks.join("\n"), /Fix build failure/i);
+  assert.equal(result.recommendedStatus, "failed");
+});
+
+test("multi-PDF task result with command passes but no browser QA is partially verified", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const result = parseDevelopmentTaskResult(
+    task,
+    [
+      "Implemented source append helper updates.",
+      "npm run typecheck passed.",
+      "npm test passed.",
+      "npm run build passed.",
+      "No browser QA was run yet.",
+    ].join("\n"),
+    "local_bridge",
+  );
+  const applied = applyRecommendedDevelopmentTaskStatus(task, result, "2026-05-12T00:03:00.000Z");
+
+  assert.equal(result.recommendedStatus, "partially_verified");
+  assert.equal(applied.status, "needs_review");
+  assert.equal(result.acceptanceCriteriaReview.find((review) => /PDF A and PDF B/i.test(review.criterion))?.status, "unknown");
+  assert.equal(result.acceptanceCriteriaReview.find((review) => /typecheck/i.test(review.criterion))?.status, "met");
+  assert.equal(result.acceptanceCriteriaReview.find((review) => /build/i.test(review.criterion))?.status, "met");
+});
+
+test("multi-PDF task result with browser QA and commands passed recommends verified", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const result = parseDevelopmentTaskResult(
+    task,
+    [
+      "Browser verification passed: PDF A and PDF B save separately.",
+      "Browser verification passed: Same-name PDFs save separately.",
+      "Browser verification passed: Reload preserves both saved PDF sources.",
+      "Browser verification passed: Consolidated memory count matches saved source count.",
+      "npm run typecheck passed.",
+      "npm test passed.",
+      "npm run build passed.",
+    ].join("\n"),
+    "manual_import",
+  );
+
+  assert.equal(result.recommendedStatus, "verified");
+  assert.equal(result.acceptanceCriteriaReview.every((review) => review.status === "met"), true);
+});
+
+test("DevelopmentTask result with build failure recommends failed", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const result = parseDevelopmentTaskResult(task, "npm run build failed with TypeScript error TS2322.", "local_bridge");
+
+  assert.equal(result.recommendedStatus, "failed");
+  assert.equal(result.acceptanceCriteriaReview.find((review) => /build/i.test(review.criterion))?.status, "unmet");
+});
+
+test("unknown acceptance criteria are not treated as met", () => {
+  const task = {
+    ...createDevelopmentTaskFromIntent({
+      input: "Build a careful dashboard.",
+      project: brainpressCoreProject,
+      memory: brainpressCoreMemory,
+    }),
+    acceptanceCriteria: ["Dashboard gives founders a clear source count."],
+  };
+  const result = parseDevelopmentTaskResult(task, "Implemented unrelated button styling.", "manual_import");
+
+  assert.equal(result.acceptanceCriteriaReview[0].status, "unknown");
+  assert.equal(result.recommendedStatus, "needs_review");
+});
+
+test("applying a recommended DevelopmentTask result updates status history", () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const result = parseDevelopmentTaskResult(
+    task,
+    [
+      "Browser verification passed: PDF A and PDF B save separately.",
+      "Browser verification passed: Same-name PDFs save separately.",
+      "Browser verification passed: Reload preserves both saved PDF sources.",
+      "Browser verification passed: Consolidated memory count matches saved source count.",
+      "npm run typecheck passed.",
+      "npm run build passed.",
+    ].join("\n"),
+    "manual_import",
+    "2026-05-12T00:02:00.000Z",
+  );
+  const updated = applyRecommendedDevelopmentTaskStatus(task, result, "2026-05-12T00:03:00.000Z");
+
+  assert.equal(result.recommendedStatus, "verified");
+  assert.equal(updated.status, "verified");
+  assert.equal(updated.statusHistory[updated.statusHistory.length - 1]?.status, "verified");
+  assert.match(updated.statusHistory[updated.statusHistory.length - 1]?.note || "", /Applied result review recommendation/i);
+});
+
+test("Codex adapter placeholder does not pretend dispatch happened without config", async () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "Fix upload multiple PDFs to memory.",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const run = await new CodexAdapter().createTask(task);
+
+  assert.equal(run.configured, false);
+  assert.equal(run.status, "not_configured");
+  assert.equal(run.runId, "");
+  assert.match(run.message, /Codex dispatch not configured yet/i);
+});
+
+test("Codex adapter boundary returns queued placeholder when configured", async () => {
+  const task = {
+    ...createDevelopmentTaskFromIntent({
+      input: "Fix upload multiple PDFs to memory.",
+      project: brainpressCoreProject,
+      memory: brainpressCoreMemory,
+      codexCloudConfigured: true,
+    }),
+    dispatchTarget: "codex_cloud" as const,
+  };
+  const run = await new CodexAdapter({ codexCloudConfigured: true }).createTask(task);
+
+  assert.equal(run.configured, true);
+  assert.equal(run.status, "queued");
+  assert.match(run.runId, /^codex_cloud_placeholder_/);
+});
+
+test("LocalCodexBridgeAdapter health check reads localhost bridge metadata", async () => {
+  const adapter = new LocalCodexBridgeAdapter({
+    baseUrl: defaultLocalCodexBridgeUrl,
+    fetcher: async (url) => {
+      assert.equal(String(url), `${defaultLocalCodexBridgeUrl}/health`);
+      return new Response(JSON.stringify({ ok: true, name: "Brainpress Local Codex Bridge", version: "0.1.0" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  const health = await adapter.checkHealth();
+
+  assert.equal(health.ok, true);
+  assert.equal(health.url, defaultLocalCodexBridgeUrl);
+  assert.equal(health.name, "Brainpress Local Codex Bridge");
+});
+
+test("LocalCodexBridgeAdapter dispatch posts DevelopmentTask to /tasks", async () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const calls: Array<{ url: string; body?: string }> = [];
+  const adapter = new LocalCodexBridgeAdapter({
+    baseUrl: "http://localhost:4317",
+    fetcher: async (url, init) => {
+      calls.push({ url: String(url), body: String(init?.body || "") });
+      if (String(url).endsWith("/health")) {
+        return new Response(JSON.stringify({ ok: true, name: "Brainpress Local Codex Bridge", version: "0.1.0" }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          runId: "local_devtask_123",
+          status: "queued",
+          externalRunUrl: "http://localhost:4317/tasks/local_devtask_123",
+          message: "Task packaged.",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+  });
+
+  const run = await adapter.createTask(task);
+  const requestBody = JSON.parse(calls[1].body || "{}") as { task: { id: string }; repo: string; branch: string; mode: string };
+
+  assert.equal(calls[0].url, "http://localhost:4317/health");
+  assert.equal(calls[1].url, "http://localhost:4317/tasks");
+  assert.equal(requestBody.task.id, task.id);
+  assert.equal(requestBody.repo, task.repo);
+  assert.equal(requestBody.branch, task.branch);
+  assert.equal(requestBody.mode, "local_bridge");
+  assert.equal(run.configured, true);
+  assert.equal(run.runId, "local_devtask_123");
+  assert.equal(run.status, "queued");
+});
+
+test("LocalCodexBridgeAdapter reports unavailable bridge clearly", async () => {
+  const task = createDevelopmentTaskFromIntent({
+    input: "checked but still cant upload multiple pdfs to memory",
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+  });
+  const adapter = new LocalCodexBridgeAdapter({
+    fetcher: async () => {
+      throw new Error("connection refused");
+    },
+  });
+
+  const health = await adapter.checkHealth();
+  const run = await adapter.createTask(task);
+
+  assert.equal(health.ok, false);
+  assert.equal(health.message, "Local Codex Bridge is not running.");
+  assert.equal(run.configured, false);
+  assert.equal(run.message, "Local Codex Bridge is not running.");
+});
+
+test("LocalCodexBridgeAdapter can poll status and import result", async () => {
+  const adapter = new LocalCodexBridgeAdapter({
+    baseUrl: "http://localhost:4317",
+    fetcher: async (url) => {
+      if (String(url).endsWith("/result")) {
+        return new Response(JSON.stringify({ runId: "local_123", status: "completed", summary: "Packaged.", raw: "Result placeholder." }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ runId: "local_123", status: "running", message: "Still running." }), { status: 200 });
+    },
+  });
+
+  const status = await adapter.getTaskStatus("local_123");
+  const result = await adapter.getTaskResult("local_123");
+
+  assert.equal(status, "running");
+  assert.equal(result.status, "completed");
+  assert.equal(result.raw, "Result placeholder.");
+});
+
+test("coding agent statuses map to DevelopmentTask statuses", () => {
+  assert.equal(developmentStatusFromCodingAgentStatus("queued"), "dispatched");
+  assert.equal(developmentStatusFromCodingAgentStatus("running"), "running");
+  assert.equal(developmentStatusFromCodingAgentStatus("completed"), "completed");
+  assert.equal(developmentStatusFromCodingAgentStatus("failed"), "failed");
+  assert.equal(developmentStatusFromCodingAgentStatus("cancelled"), "cancelled");
+  assert.equal(developmentStatusFromCodingAgentStatus("unknown"), "ready_to_dispatch");
+});
+
+test("legacy storage loads with DevelopmentTask fallback fields", () => {
+  const normalized = normalizeDevelopmentTask({
+    id: "legacy_task",
+    projectId: brainpressCoreProject.id,
+    title: "Legacy task",
+    status: "running",
+  }, brainpressCoreProject);
+
+  assert.equal(normalized.id, "legacy_task");
+  assert.equal(normalized.repo, brainpressCoreProject.repoPathOrUrl);
+  assert.equal(normalized.statusHistory.length, 1);
+  assert.match(normalized.codexGoal, /^\/goal Continue building Brainpress Core\./);
+});
+
+test("default dispatch target prefers Codex Cloud when configured and GitHub Dispatch otherwise", () => {
+  assert.equal(defaultDispatchTarget({ codexCloudConfigured: true, preferredAgent: "Codex" }), "codex_cloud");
+  assert.equal(defaultDispatchTarget({ codexCloudConfigured: false, preferredAgent: "Codex" }), "github_issue");
+  assert.equal(defaultDispatchTarget({ codexCloudConfigured: false, preferredAgent: "Claude Code" }), "manual");
+  assert.equal(defaultDispatchMode("github_issue"), "github_based");
 });
 
 test("allowed verification command validation accepts only the v1 allowlist", () => {
@@ -1154,12 +2310,14 @@ test("legacy duplicate import ids are normalized instead of collapsing saved PDF
   }
 });
 
-test("Sources panel exposes saved source count and names", () => {
+test("legacy Sources panel is archived while saved source labels stay available", () => {
   const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+  const archiveSource = readFileSync("src/components/brainpress/internal/archived-workspace-surfaces.ts", "utf8");
 
   assert.match(savedSourcesLabel(2), /2 sources saved/);
-  assert.match(componentSource, /savedSourcesLabel\(imports\.length\)/);
-  assert.match(componentSource, /Saved sources:/);
+  assert.match(archiveSource, /ImportsPanel/);
+  assert.doesNotMatch(componentSource, /function ImportsPanel/);
+  assert.doesNotMatch(componentSource, /Saved sources:/);
 });
 
 test("Save as Source Only appends a source without changing dashboard memory", () => {
@@ -1395,6 +2553,170 @@ test("Memory UI does not repeat stale filler copy in cards", () => {
   const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
 
   assert.doesNotMatch(componentSource, /No strong signal detected/);
+});
+
+test("Think Build Run workspace exposes Think as the first founder experience", () => {
+  const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+  const thinkSource = readFileSync("src/components/brainpress/think-workspace.tsx", "utf8");
+  const homeSource = readFileSync("app/page.tsx", "utf8");
+  const buildSection = sourceBetween(componentSource, "function DevelopmentTasksTab", "function DevelopmentTaskDetail");
+  const taskDetailSection = sourceBetween(componentSource, "function DevelopmentTaskDetail", "function DispatchOptionCard");
+
+  assert.match(componentSource, /const tabs = \["Think", "Build", "Run"\] as const/);
+  assert.match(componentSource, /useState<Tab>\("Think"\)/);
+  assert.match(thinkSource, /AI Cofounder/);
+  assert.match(thinkSource, /MobilePaneSwitch/);
+  assert.match(thinkSource, /Chat/);
+  assert.match(thinkSource, /Canvas/);
+  assert.match(thinkSource, /Ask Brainpress about your product idea/);
+  assert.match(thinkSource, /ThinkChatMessage/);
+  assert.match(thinkSource, /Brainpress is thinking through the product direction/);
+  assert.match(thinkSource, /I shaped this into a product direction/);
+  assert.match(thinkSource, /I also updated the canvas with Vision, Roadmap, Features, Risks, and a Product Window preview/);
+  assert.match(thinkSource, /I couldn't complete that Think session/);
+  assert.match(thinkSource, /Think Canvas/);
+  assert.match(thinkSource, /Shape the product before you build it\./);
+  assert.match(thinkSource, /Think with Brainpress to clarify ideas, define the MVP, make product decisions, and turn messy founder thinking into buildable direction\./);
+  assert.match(thinkSource, /Clarify idea/);
+  assert.match(thinkSource, /Define MVP/);
+  assert.match(thinkSource, /Create feature spec/);
+  assert.match(thinkSource, /Plan roadmap/);
+  assert.match(thinkSource, /Analyze risk/);
+  assert.match(thinkSource, /Product Brief/);
+  assert.match(thinkSource, /Feature Specs/);
+  assert.match(thinkSource, /No decisions yet/);
+  assert.match(thinkSource, /Vision/);
+  assert.match(thinkSource, /Roadmap/);
+  assert.match(thinkSource, /Features/);
+  assert.match(thinkSource, /Design/);
+  assert.match(thinkSource, /Product UI Example Window/);
+  assert.match(thinkSource, /Product Window/);
+  assert.match(thinkSource, /Product UI/);
+  assert.match(thinkSource, /Agent-built preview page/);
+  assert.match(thinkSource, /Build Next/);
+  assert.match(thinkSource, /Create Build Task/);
+  assert.match(thinkSource, /Live AI/);
+  assert.match(thinkSource, /Local fallback/);
+  assert.doesNotMatch(thinkSource, /What are we trying to figure out\?/);
+  assert.doesNotMatch(thinkSource, /Co-create artifacts/);
+  assert.doesNotMatch(thinkSource, /Generated product direction/);
+  assert.match(buildSection, /AI Build Agent/);
+  assert.match(buildSection, /Task Execution Canvas/);
+  assert.match(buildSection, /Chat \/ Tasks/);
+  assert.match(buildSection, /Canvas \/ Detail/);
+  assert.match(buildSection, /Human approval/);
+  assert.match(taskDetailSection, /Local Bridge/);
+  assert.match(taskDetailSection, /Desktop only/);
+  assert.match(taskDetailSection, /GitHub Dispatch/);
+  assert.match(taskDetailSection, /Best for phone/);
+  assert.match(taskDetailSection, /Codex Cloud/);
+  assert.match(taskDetailSection, /Use Codex web\/iOS or GitHub @codex/);
+  assert.match(taskDetailSection, /Copy GitHub Issue Body/);
+  assert.match(taskDetailSection, /Create GitHub Issue/);
+  assert.match(homeSource, /redirect\("\/projects\/brainpress-core"\)/);
+  assert.doesNotMatch(componentSource, /Dev Agent Inbox/);
+  assert.doesNotMatch(componentSource, /const tabs = \["Overview"/);
+  assert.doesNotMatch(componentSource, /const tabs = .*"Memory".*"Agent Runs"/);
+  assert.doesNotMatch(thinkSource, /Import Project History|Upload PDF|Sources|Workspace settings|Project Roadmap Dashboard/);
+  assert.doesNotMatch(buildSection, /Import Project History|Upload PDF|Sources|Founder Memory|Project Roadmap Dashboard/);
+});
+
+test("Brainpress workspace list keys include context and index instead of raw duplicated text", () => {
+  const workspaceSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+  const thinkSource = readFileSync("src/components/brainpress/think-workspace.tsx", "utf8");
+  const agentRunsSource = readFileSync("src/components/brainpress/agent-runs-tab.tsx", "utf8");
+  const combined = `${workspaceSource}\n${thinkSource}\n${agentRunsSource}`;
+
+  assert.doesNotMatch(combined, /key=\{item\}/);
+  assert.doesNotMatch(combined, /key=\{command\}/);
+  assert.doesNotMatch(combined, /key=\{step\}/);
+  assert.doesNotMatch(combined, /key=\{action\}/);
+  assert.doesNotMatch(combined, /key=\{title\}/);
+  assert.doesNotMatch(combined, /key=\{result\.command\}/);
+  assert.match(workspaceSource, /summary-list-\$\{title\}-\$\{index\}/);
+  assert.match(thinkSource, /canvas-node-\$\{title\}-\$\{index\}/);
+  assert.match(thinkSource, /think-chat-message-\$\{index\}-\$\{message\.id\}/);
+  assert.match(workspaceSource, /criteria-review-\$\{index\}-\$\{review\.status\}/);
+  assert.match(agentRunsSource, /verification-command-\$\{selectedRun\.id\}-\$\{index\}/);
+});
+
+test("Run workspace is product operations, not old memory or source intake UI", () => {
+  const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
+  const runSection = sourceBetween(componentSource, "function RunOperatingTab", "function RunAgentCard");
+
+  assert.match(runSection, /Run the product after agents build it\./);
+  assert.match(runSection, /What do we need to run, verify, or fix\?/);
+  assert.match(runSection, /Review with Run Agent/);
+  assert.match(runSection, /AI Operations Agent/);
+  assert.match(runSection, /Run Canvas/);
+  assert.match(runSection, /Ops Board/);
+  assert.match(runSection, /Approval gate/);
+  assert.match(runSection, /Infrastructure Agent/);
+  assert.match(runSection, /QA Agent/);
+  assert.match(runSection, /Release Agent/);
+  assert.match(runSection, /Feedback \/ Issue Agent/);
+  assert.match(runSection, /Supabase setup/);
+  assert.match(runSection, /Vercel deployment/);
+  assert.match(runSection, /Set up infrastructure/);
+  assert.match(runSection, /Fix deployment/);
+  assert.match(runSection, /Configure Supabase/);
+  assert.match(runSection, /Configure Vercel/);
+  assert.doesNotMatch(runSection, /Advanced source intake/);
+  assert.doesNotMatch(runSection, /Founder Memory/);
+  assert.doesNotMatch(runSection, /Project Roadmap Dashboard/);
+  assert.doesNotMatch(runSection, /Import Project History/);
+  assert.doesNotMatch(runSection, /Paste text|Upload PDF/);
+  assert.doesNotMatch(runSection, /Workspace settings/);
+  assert.doesNotMatch(runSection, /Product Summary|Target Users|Current Build State|Technical Details/);
+});
+
+test("Run Agent classifies Supabase and Vercel operations issues", () => {
+  const supabaseIssue = createRunIssue({
+    projectId: seedProject.id,
+    input: "Login not working in production after Supabase auth redirect and RLS changes.",
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const vercelIssue = createRunIssue({
+    projectId: seedProject.id,
+    input: "Vercel production deploy failed and the domain shows a serverless API route error.",
+    now: "2026-05-12T00:00:00.000Z",
+  });
+
+  assert.equal(supabaseIssue.type, "supabase");
+  assert.equal(supabaseIssue.provider, "supabase");
+  assert.match(supabaseIssue.verificationSteps.join("\n"), /Supabase auth Site URL and redirect URLs/i);
+  assert.match(supabaseIssue.verificationSteps.join("\n"), /RLS policies/i);
+  assert.match(supabaseIssue.recommendedSteps.join("\n"), /Vercel environment variables/i);
+  assert.match(supabaseIssue.recommendedSteps.join("\n"), /Redeploy after environment variable changes/i);
+  assert.match(supabaseIssue.verificationSteps.join("\n"), /Production login succeeds/i);
+
+  assert.equal(vercelIssue.type, "vercel");
+  assert.equal(vercelIssue.provider, "domain");
+  assert.match(vercelIssue.verificationSteps.join("\n"), /Vercel build logs/i);
+  assert.match(vercelIssue.verificationSteps.join("\n"), /Environment variables/i);
+  assert.match(vercelIssue.verificationSteps.join("\n"), /Domain points/i);
+  assert.match(vercelIssue.recommendedSteps.join("\n"), /Compare Preview versus Production/i);
+  assert.match(vercelIssue.recommendedSteps.join("\n"), /serverless\/API route errors/i);
+});
+
+test("Run issue can create a ready Build task linked back to Run", () => {
+  const issue = createRunIssue({
+    projectId: seedProject.id,
+    input: "Supabase storage bucket uploads fail in production and users cannot finish onboarding.",
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const task = createDevelopmentTaskFromRunIssue({
+    issue,
+    project: seedProject,
+    memory: seedMemory,
+    now: "2026-05-12T00:01:00.000Z",
+  });
+
+  assert.equal(task.status, "ready_to_dispatch");
+  assert.equal(task.runIssueId, issue.id);
+  assert.match(task.context.join("\n"), /Run issue type: supabase/i);
+  assert.match(task.acceptanceCriteria.join("\n"), /Storage bucket policies work/i);
+  assert.match(task.codexGoal, /\/goal/);
 });
 
 test("Rebuild Project Memory uses all saved sources with mocked OpenAI", async () => {

@@ -17,6 +17,76 @@ export type VerificationStatus = "Not run" | "Passing" | "Failing" | "Mixed" | "
 export type VerificationResultStatus = "passed" | "failed";
 export type ProjectImportSourceType = "TextPaste" | "PDF";
 export type ProjectHistoryAnalyzer = "AI" | "Local" | "AIUnavailable";
+export type DevelopmentTaskType =
+  | "bug_fix"
+  | "feature"
+  | "refactor"
+  | "test"
+  | "build_fix"
+  | "qa"
+  | "code_review"
+  | "documentation";
+export type DevelopmentTaskStatus =
+  | "draft"
+  | "ready_to_dispatch"
+  | "prepared_for_github"
+  | "dispatching"
+  | "dispatched"
+  | "running"
+  | "completed"
+  | "needs_review"
+  | "verified"
+  | "failed"
+  | "cancelled"
+  | "merged";
+export type DevelopmentTaskPriority = "low" | "medium" | "high" | "urgent";
+export type DevelopmentTaskDispatchTarget = "codex_cloud" | "codex_cli" | "github_issue" | "manual" | "none";
+export type DevelopmentTaskDispatchMode = "direct" | "local_bridge" | "github_based" | "manual_copy";
+export type DevelopmentTaskResultSource = "local_bridge" | "manual_import" | "codex_cloud" | "github_pr";
+export type AcceptanceCriteriaReviewStatus = "met" | "unmet" | "unknown" | "partial";
+export type DevelopmentTaskRecommendedStatus = "needs_review" | "verified" | "failed" | "partially_verified";
+export type DevelopmentTaskVerificationResultStatus = "passed" | "failed" | "unknown" | "skipped";
+export type BrainpressAgentSource = "openai" | "fallback";
+export type RunIssueType = "infrastructure" | "deployment" | "supabase" | "vercel" | "qa" | "release" | "feedback" | "bug";
+export type RunIssueProvider = "supabase" | "vercel" | "github" | "domain" | "custom";
+export type ThinkMode =
+  | "open_thinking"
+  | "clarify_idea"
+  | "define_mvp"
+  | "create_feature_spec"
+  | "plan_roadmap"
+  | "make_decision"
+  | "analyze_risk";
+export type ThinkArtifactType =
+  | "product_brief"
+  | "roadmap"
+  | "decision_memo"
+  | "feature_spec"
+  | "risk_analysis"
+  | "mvp_scope";
+export type ThinkSessionStatus = "draft" | "generated" | "accepted" | "converted_to_build";
+export type ProductWindowPreviewType =
+  | "landing_page"
+  | "dashboard"
+  | "app_workspace"
+  | "mobile_app"
+  | "admin_panel"
+  | "agent_console"
+  | "onboarding"
+  | "custom";
+export type ProductWindowSectionType =
+  | "hero"
+  | "input_console"
+  | "card_grid"
+  | "workflow_steps"
+  | "status_panel"
+  | "artifact_list"
+  | "agent_result"
+  | "dashboard_metric"
+  | "qa_panel"
+  | "infrastructure_panel"
+  | "feedback_panel";
+export type ProductWindowStatus = "draft" | "generated" | "approved" | "converted_to_build";
 export type AgentRunStatus =
   | "Draft"
   | "Prepared"
@@ -95,6 +165,166 @@ export interface AgentPrompt {
   targetAgent: TargetAgent;
   prompt: string;
   status: PromptStatus;
+  createdAt: string;
+}
+
+export interface DevelopmentTaskStatusEvent {
+  status: DevelopmentTaskStatus;
+  note: string;
+  at: string;
+}
+
+export interface DevelopmentTask {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  taskType: DevelopmentTaskType;
+  status: DevelopmentTaskStatus;
+  priority: DevelopmentTaskPriority;
+  repo: string;
+  branch: string;
+  context: string[];
+  affectedAreas: string[];
+  acceptanceCriteria: string[];
+  verificationCommands: string[];
+  manualQaSteps: string[];
+  constraints: string[];
+  dispatchTarget: DevelopmentTaskDispatchTarget;
+  dispatchMode: DevelopmentTaskDispatchMode;
+  codexGoal: string;
+  codexGoalUpdatedAt?: string;
+  codexRunId?: string;
+  externalRunUrl?: string;
+  runIssueId?: string;
+  sourceThinkSessionId?: string;
+  sourceProductWindowId?: string;
+  agentSource?: BrainpressAgentSource;
+  agentModel?: string;
+  agentError?: string;
+  prUrl?: string;
+  resultSummary: string;
+  resultRaw: string;
+  statusHistory: DevelopmentTaskStatusEvent[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecommendedBuildTask {
+  title: string;
+  taskType: DevelopmentTaskType;
+  priority: DevelopmentTaskPriority;
+  reason: string;
+  acceptanceCriteria: string[];
+}
+
+export interface ThinkSession {
+  id: string;
+  projectId: string;
+  title: string;
+  input: string;
+  mode: ThinkMode;
+  artifactType: ThinkArtifactType;
+  summary: string;
+  productDirection: string;
+  userProblem: string;
+  targetUser: string;
+  proposedSolution: string;
+  mvpScope: string[];
+  featureIdeas: string[];
+  decisions: string[];
+  risks: string[];
+  openQuestions: string[];
+  recommendedBuildTasks: RecommendedBuildTask[];
+  agentSource?: BrainpressAgentSource;
+  agentModel?: string;
+  agentError?: string;
+  status: ThinkSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProductWindowSection {
+  id: string;
+  title: string;
+  purpose: string;
+  content: string;
+  componentType: ProductWindowSectionType;
+}
+
+export interface ProductWindow {
+  id: string;
+  projectId: string;
+  thinkSessionId: string;
+  title: string;
+  route: string;
+  previewType: ProductWindowPreviewType;
+  userScenario: string;
+  screenDescription: string;
+  primaryCTA: string;
+  sections: ProductWindowSection[];
+  uiPrinciples: string[];
+  userFlow: string[];
+  openQuestions: string[];
+  status: ProductWindowStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AcceptanceCriteriaReview {
+  criterion: string;
+  status: AcceptanceCriteriaReviewStatus;
+  evidence: string;
+  requiredFollowUp?: string;
+}
+
+export interface DevelopmentTaskCommandResult {
+  command: string;
+  status: DevelopmentTaskVerificationResultStatus;
+  evidence: string;
+}
+
+export interface DevelopmentTaskManualQaResult {
+  step: string;
+  status: DevelopmentTaskVerificationResultStatus;
+  evidence: string;
+}
+
+export interface DevelopmentTaskResult {
+  id: string;
+  taskId: string;
+  source: DevelopmentTaskResultSource;
+  rawText: string;
+  summary: string;
+  changedFiles: string[];
+  commandsRun: string[];
+  verificationResults: DevelopmentTaskCommandResult[];
+  manualQaResults: DevelopmentTaskManualQaResult[];
+  risks: string[];
+  remainingIssues: string[];
+  nextTasks: string[];
+  prUrl?: string;
+  recommendedStatus: DevelopmentTaskRecommendedStatus;
+  acceptanceCriteriaReview: AcceptanceCriteriaReview[];
+  createdAt: string;
+}
+
+export interface RunIssue {
+  id: string;
+  projectId: string;
+  type: RunIssueType;
+  title: string;
+  summary: string;
+  provider?: RunIssueProvider;
+  likelyCauses: string[];
+  recommendedSteps: string[];
+  verificationSteps: string[];
+  requiredAccess: string[];
+  risks: string[];
+  recommendedBuildTasks: string[];
+  agentSource?: BrainpressAgentSource;
+  agentModel?: string;
+  agentError?: string;
   createdAt: string;
 }
 
@@ -245,6 +475,11 @@ export interface BrainpressState {
   memories: Record<string, Memory>;
   outcomes: Outcome[];
   prompts: AgentPrompt[];
+  thinkSessions: ThinkSession[];
+  productWindows: ProductWindow[];
+  developmentTasks: DevelopmentTask[];
+  developmentTaskResults: DevelopmentTaskResult[];
+  runIssues: RunIssue[];
   agentRuns: AgentRun[];
   buildLogs: BuildLog[];
   imports: ProjectImport[];

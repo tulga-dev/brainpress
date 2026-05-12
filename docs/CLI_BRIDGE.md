@@ -21,6 +21,56 @@ Browser downloads still work for handoff-only mode. Direct Codex mode writes the
 
 Every generated prompt and handoff includes founder-safe Permission Safety Rules. These rules tell coding agents to stop and explain risk instead of asking a non-technical founder to approve dangerous actions blindly.
 
+## DevelopmentTask Local Bridge
+
+Brainpress now also supports a `DevelopmentTask` local bridge dispatch path. This is separate from the older AgentRun prompt execution path. A task uses:
+
+- `dispatchTarget: codex_cli`
+- `dispatchMode: local_bridge`
+
+Brainpress checks the local bridge through:
+
+```text
+GET http://localhost:4317/health
+```
+
+The reference bridge can be started with:
+
+```bash
+npm run bridge
+```
+
+Brainpress dispatches a task through:
+
+```text
+POST http://localhost:4317/tasks
+```
+
+Expected body:
+
+```json
+{
+  "task": "<DevelopmentTask>",
+  "repo": "<local repo path>",
+  "branch": "<branch name>",
+  "mode": "local_bridge"
+}
+```
+
+The reference bridge writes:
+
+```text
+.brainpress/tasks/<task-id>/
+  task.json
+  task.md
+  status.json
+  result.md
+```
+
+This version only packages the task. It does not invoke Codex CLI, edit files, commit, push, merge, or deploy. Future versions may add explicit approval-gated Codex CLI execution.
+
+If the bridge is unavailable, Brainpress shows: "Local Codex Bridge is not running."
+
 ## Direct Codex Execution
 
 The Codex bridge creates a run directory, writes handoff files, asks for approval, then runs:
