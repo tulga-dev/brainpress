@@ -1098,6 +1098,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         {activeTab === "Think" ? (
           <ThinkOperatingTab
             projectName={activeService.name}
+            service={activeService}
+            agents={serviceAgents}
             directionInput={thinkDirectionInput}
             sessions={thinkSessions}
             productWindows={productWindows}
@@ -1115,6 +1117,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             onRegenerateProductWindow={regenerateProductWindow}
             onApproveProductWindow={approveProductWindow}
             onCreateProductWindowBuildTask={createBuildTaskFromProductWindow}
+            onGenerateServiceBlueprint={generateServiceBlueprintForWorkspace}
+            onGenerateBuildPlan={createPlanAndTasksFromSpec}
             thinkingWithAgent={thinkingWithAgent}
           />
         ) : null}

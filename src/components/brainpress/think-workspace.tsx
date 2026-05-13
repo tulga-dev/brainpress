@@ -1,14 +1,16 @@
 "use client";
 
-import { CheckCircle2, CornerDownRight, Plus, Send, Sparkles, Wand2 } from "lucide-react";
+import { CheckCircle2, CornerDownRight, Plus, Send, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThinkAgentResult } from "@/lib/agent-gateway";
 import type {
+  BrainpressService,
   BrainpressSpec,
   BrainpressAgentSource,
   ClarifyingQuestion,
   ProductWindow,
   RecommendedBuildTask,
+  ServiceAgent,
   ThinkArtifactType,
   ThinkMode,
   ThinkSession,
@@ -17,6 +19,8 @@ import { Button, TextArea, cx } from "@/components/brainpress/ui";
 
 interface ThinkOperatingTabProps {
   projectName: string;
+  service: BrainpressService;
+  agents: ServiceAgent[];
   directionInput: string;
   sessions: ThinkSession[];
   productWindows: ProductWindow[];
@@ -34,6 +38,8 @@ interface ThinkOperatingTabProps {
   onRegenerateProductWindow: (session: ThinkSession) => void;
   onApproveProductWindow: (productWindow: ProductWindow) => void;
   onCreateProductWindowBuildTask: (session: ThinkSession, productWindow: ProductWindow) => void;
+  onGenerateServiceBlueprint: () => void;
+  onGenerateBuildPlan: (spec: BrainpressSpec) => void;
   thinkingWithAgent: boolean;
 }
 
@@ -56,21 +62,23 @@ export interface ThinkChatMessage {
 const quickStarts = [
   { title: "Clarify idea", mode: "clarify_idea" },
   { title: "Define MVP", mode: "define_mvp" },
-  { title: "Create feature spec", mode: "create_feature_spec" },
-  { title: "Plan roadmap", mode: "plan_roadmap" },
+  { title: "Create service spec", mode: "create_feature_spec" },
+  { title: "Plan build path", mode: "plan_roadmap" },
   { title: "Make decision", mode: "make_decision" },
   { title: "Analyze risk", mode: "analyze_risk" },
 ] as const;
 
 const artifactOptions = [
-  { title: "Product Brief", artifactType: "product_brief" },
-  { title: "Roadmap", artifactType: "roadmap" },
+  { title: "Service Brief", artifactType: "product_brief" },
+  { title: "Build Path", artifactType: "roadmap" },
   { title: "Decisions", artifactType: "decision_memo" },
-  { title: "Feature Specs", artifactType: "feature_spec" },
+  { title: "Service Spec", artifactType: "feature_spec" },
 ] as const;
 
 export function ThinkOperatingTab({
   projectName,
+  service,
+  agents,
   directionInput,
   sessions,
   productWindows,
@@ -88,9 +96,10 @@ export function ThinkOperatingTab({
   onRegenerateProductWindow,
   onApproveProductWindow,
   onCreateProductWindowBuildTask,
+  onGenerateServiceBlueprint,
+  onGenerateBuildPlan,
   thinkingWithAgent,
 }: ThinkOperatingTabProps) {
-  const [mobilePane, setMobilePane] = useState<"chat" | "canvas">("chat");
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) || sessions[0];
   const selectedProductWindow = selectedSession
     ? productWindows.find((window) => window.thinkSessionId === selectedSession.id)
@@ -108,73 +117,65 @@ export function ThinkOperatingTab({
 
   return (
     <section className="overflow-hidden rounded-lg border border-slate-800 bg-[#05070d] text-white shadow-2xl">
-      <MobilePaneSwitch active={mobilePane} onChange={setMobilePane} />
-      <div className="grid min-h-[760px] lg:grid-cols-[360px_minmax(0,1fr)]">
-        <div className={cx(mobilePane === "chat" ? "block" : "hidden", "lg:block")}>
-          <ThinkCofounderSidebar
-            projectName={projectName}
-            directionInput={directionInput}
-            sessions={sessions}
-            selectedSessionId={selectedSession?.id || ""}
-            mode={mode}
-            artifactType={artifactType}
-            thinkingWithAgent={thinkingWithAgent}
-            onDirectionInputChange={onDirectionInputChange}
-            onModeChange={onModeChange}
-            onArtifactTypeChange={onArtifactTypeChange}
-            onSelectSession={onSelectSession}
-            onCreateProductDirection={createProductDirectionFromChat}
-          />
+      <div className="border-b border-white/10 bg-[#070a12] px-5 py-4">
+        <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Think Canvas</p>
+        <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-normal text-white md:text-3xl">
+              Shape the Service before Codex builds it.
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              Move from founder idea to Service Spec, Agent Blueprint, approval points, and build-ready direction.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {selectedSession ? <CanvasTag>{formatThinkArtifactType(selectedSession.artifactType)}</CanvasTag> : null}
+            <CanvasTag>{selectedSpec?.clarificationStatus === "needs_clarification" ? "Needs clarification" : selectedSpec ? "Build direction ready" : "Draft"}</CanvasTag>
+          </div>
         </div>
-        <div className={cx(mobilePane === "canvas" ? "block" : "hidden", "lg:block")}>
-          <ThinkCanvas
-            selectedSession={selectedSession}
-            productWindow={selectedProductWindow}
-            spec={selectedSpec}
-            clarifyingQuestions={selectedClarifyingQuestions}
-            onCreateBuildTask={onCreateBuildTask}
-            onRegenerateProductWindow={onRegenerateProductWindow}
-            onApproveProductWindow={onApproveProductWindow}
-            onCreateProductWindowBuildTask={onCreateProductWindowBuildTask}
-          />
-        </div>
+      </div>
+
+      <div className="grid min-h-[760px] lg:grid-cols-[360px_minmax(0,1.15fr)_minmax(320px,0.9fr)]">
+        <ThinkCofounderSidebar
+          projectName={projectName}
+          service={service}
+          directionInput={directionInput}
+          sessions={sessions}
+          selectedSessionId={selectedSession?.id || ""}
+          selectedSpec={selectedSpec}
+          clarifyingQuestions={selectedClarifyingQuestions}
+          mode={mode}
+          artifactType={artifactType}
+          thinkingWithAgent={thinkingWithAgent}
+          onDirectionInputChange={onDirectionInputChange}
+          onModeChange={onModeChange}
+          onArtifactTypeChange={onArtifactTypeChange}
+          onSelectSession={onSelectSession}
+          onCreateProductDirection={createProductDirectionFromChat}
+        />
+        <ThinkCanvas
+          service={service}
+          agents={agents}
+          selectedSession={selectedSession}
+          spec={selectedSpec}
+          clarifyingQuestions={selectedClarifyingQuestions}
+          onCreateBuildTask={onCreateBuildTask}
+          onGenerateServiceBlueprint={onGenerateServiceBlueprint}
+          onGenerateBuildPlan={onGenerateBuildPlan}
+        />
       </div>
     </section>
   );
 }
 
-function MobilePaneSwitch({
-  active,
-  onChange,
-}: {
-  active: "chat" | "canvas";
-  onChange: (value: "chat" | "canvas") => void;
-}) {
-  return (
-    <div className="border-b border-white/10 bg-[#070a12] p-2 lg:hidden">
-      <div className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/30 p-1">
-        {(["chat", "canvas"] as const).map((pane) => (
-          <button
-            key={`mobile-pane-${pane}`}
-            className={cx(
-              "h-9 rounded-md text-sm font-medium capitalize transition",
-              active === pane ? "bg-white text-slate-950" : "text-slate-400 hover:bg-white/[0.07] hover:text-white",
-            )}
-            onClick={() => onChange(pane)}
-          >
-            {pane === "chat" ? "Chat" : "Canvas"}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ThinkCofounderSidebar({
   projectName,
+  service,
   directionInput,
   sessions,
   selectedSessionId,
+  selectedSpec,
+  clarifyingQuestions,
   mode,
   artifactType,
   thinkingWithAgent,
@@ -185,9 +186,12 @@ function ThinkCofounderSidebar({
   onCreateProductDirection,
 }: {
   projectName: string;
+  service: BrainpressService;
   directionInput: string;
   sessions: ThinkSession[];
   selectedSessionId: string;
+  selectedSpec?: BrainpressSpec;
+  clarifyingQuestions: ClarifyingQuestion[];
   mode: ThinkMode;
   artifactType: ThinkArtifactType;
   thinkingWithAgent: boolean;
@@ -201,6 +205,7 @@ function ThinkCofounderSidebar({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const persistedMessages = useMemo(() => sessionHistoryToMessages(sessions), [sessions]);
   const visibleMessages = chatMessages.length ? chatMessages : persistedMessages;
+  const openQuestions = clarifyingQuestions.filter((question) => question.status !== "answered");
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: "end" });
@@ -257,13 +262,16 @@ function ThinkCofounderSidebar({
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Brainpress</p>
-            <h2 className="mt-1 text-xl font-semibold text-white">AI Cofounder</h2>
+            <h2 className="mt-1 text-xl font-semibold text-white">Founder Input</h2>
           </div>
           <span className="rounded-md border border-blue-400/20 bg-blue-400/10 px-2 py-1 font-mono text-xs text-blue-200">
             Think mode
           </span>
         </div>
         <p className="mt-3 text-sm leading-6 text-slate-400">{projectName}</p>
+        <p className="mt-2 text-xs leading-5 text-slate-500">
+          {shortText(service.servicePromise || service.description || "Describe the Service and Brainpress will shape the spec.", 120)}
+        </p>
       </div>
 
       <div className="border-b border-white/10 p-4">
@@ -291,6 +299,35 @@ function ThinkCofounderSidebar({
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.035] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-200">Clarifying Questions</p>
+            <span className="rounded-md bg-amber-300/10 px-2 py-1 font-mono text-[10px] text-amber-100">
+              {openQuestions.length}
+            </span>
+          </div>
+          {openQuestions.length ? (
+            <ul className="mt-3 space-y-2 text-xs leading-5 text-slate-300">
+              {openQuestions.slice(0, 3).map((question, index) => (
+                <li key={`sidebar-question-${index}-${question.id}`} className="flex gap-2">
+                  <CornerDownRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-200/80" />
+                  <span>{shortText(question.question, 96)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs leading-5 text-slate-500">No open questions yet.</p>
+          )}
+        </div>
+
+        <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3">
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-500">Relevant Context</p>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-400">
+            <span>{sessions.length} Think {sessions.length === 1 ? "session" : "sessions"}</span>
+            <span>{selectedSpec ? selectedSpec.clarificationStatus.replaceAll("_", " ") : "No spec yet"}</span>
+          </div>
         </div>
       </div>
 
@@ -333,7 +370,7 @@ function ThinkCofounderSidebar({
           </span>
           <Button variant="primary" onClick={sendThinkMessage} disabled={thinkingWithAgent || !directionInput.trim()}>
             {thinkingWithAgent ? <Sparkles className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
-            {thinkingWithAgent ? "Thinking" : "Send"}
+            {thinkingWithAgent ? "Thinking" : "Refine Service"}
           </Button>
         </div>
       </div>
@@ -342,180 +379,150 @@ function ThinkCofounderSidebar({
 }
 
 function ThinkCanvas({
+  service,
+  agents,
   selectedSession,
-  productWindow,
   spec,
   clarifyingQuestions,
   onCreateBuildTask,
-  onRegenerateProductWindow,
-  onApproveProductWindow,
-  onCreateProductWindowBuildTask,
+  onGenerateServiceBlueprint,
+  onGenerateBuildPlan,
 }: {
+  service: BrainpressService;
+  agents: ServiceAgent[];
   selectedSession?: ThinkSession;
-  productWindow?: ProductWindow;
   spec?: BrainpressSpec;
   clarifyingQuestions: ClarifyingQuestion[];
   onCreateBuildTask: (session: ThinkSession, recommendation: RecommendedBuildTask) => void;
-  onRegenerateProductWindow: (session: ThinkSession) => void;
-  onApproveProductWindow: (productWindow: ProductWindow) => void;
-  onCreateProductWindowBuildTask: (session: ThinkSession, productWindow: ProductWindow) => void;
+  onGenerateServiceBlueprint: () => void;
+  onGenerateBuildPlan: (spec: BrainpressSpec) => void;
 }) {
-  const hasSession = Boolean(selectedSession);
-  const features = selectedSession?.featureIdeas.length ? selectedSession.featureIdeas : ["Feature ideas will appear here."];
-  const roadmap = selectedSession?.mvpScope.length ? selectedSession.mvpScope : ["Define the smallest useful version."];
-  const risks = selectedSession?.risks.length ? selectedSession.risks : ["Risks and unknowns will be mapped as you think."];
+  const serviceCapabilities = selectedSession?.featureIdeas.length ? selectedSession.featureIdeas : ["Service capabilities will appear as the spec becomes clearer."];
+  const workflow = service.serviceWorkflow.length
+    ? service.serviceWorkflow
+    : selectedSession?.mvpScope.length
+      ? selectedSession.mvpScope
+      : ["Capture the request.", "Clarify the outcome.", "Route build work only after founder approval.", "Verify before marking work ready."];
+  const risks = uniqueText([
+    ...(selectedSession?.risks || []),
+    ...(spec?.assumptions.map((assumption) => `Assumption: ${assumption}`) || []),
+    ...(service.openQuestions || []),
+  ]);
+  const constraints = uniqueText([
+    ...(spec?.nonGoals.map((item) => `Not now: ${item}`) || []),
+    ...(selectedSession?.decisions || []),
+  ]);
   const firstRecommendation = selectedSession?.recommendedBuildTasks[0];
 
   return (
-    <div className="relative min-h-[760px] overflow-hidden bg-[#05070d] p-4 md:p-6">
-      <CanvasBackdrop />
-
-      <div className="relative z-10 mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Think Canvas</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-normal text-white md:text-4xl">
-            Shape the service before Codex builds it.
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
-            Think with Brainpress to define the service promise, agent team, workflow, approvals, and buildable direction.
-          </p>
+    <>
+      <main className="relative min-h-[760px] overflow-hidden border-b border-white/10 bg-[#05070d] p-4 md:p-5 lg:border-b-0 lg:border-r">
+        <CanvasBackdrop />
+        <div className="relative z-10 space-y-4">
+          <ServiceSpecCard service={service} session={selectedSession} spec={spec} clarifyingQuestions={clarifyingQuestions} />
+          <ServiceWorkflowCard workflow={workflow} capabilities={serviceCapabilities} approvalPoints={service.humanApprovalPoints} />
+          <RisksUnknownsCard risks={risks} constraints={constraints} openQuestions={spec?.openQuestions || service.openQuestions} />
         </div>
-        {selectedSession ? (
-          <div className="flex flex-wrap gap-2">
-            <CanvasTag>{formatThinkArtifactType(selectedSession.artifactType)}</CanvasTag>
-            <CanvasTag>{selectedSession.status.replaceAll("_", " ")}</CanvasTag>
-          </div>
-        ) : null}
-      </div>
+      </main>
 
-      <div className="relative z-10 grid gap-4 xl:hidden">
-        <ThinkCanvasNode title="Vision" eyebrow="Direction" summary={selectedSession?.productDirection || "Your service direction will land here."} />
-        <SpecStatusNode spec={spec} clarifyingQuestions={clarifyingQuestions} />
-        <ProductWindowNode
-          session={selectedSession}
-          productWindow={productWindow}
-          onRegenerateProductWindow={onRegenerateProductWindow}
-          onApproveProductWindow={onApproveProductWindow}
-          onCreateProductWindowBuildTask={onCreateProductWindowBuildTask}
-        />
-        <ThinkCanvasNode title="Features" eyebrow="Ideas" summary={features[0]} items={features.slice(0, 4)} />
-        <ThinkCanvasNode title="Design" eyebrow="Feel" summary={productWindow?.uiPrinciples[0] || "UI principles will appear after the ServiceWindow is generated."} items={productWindow?.uiPrinciples.slice(0, 3)} />
-        <ThinkCanvasNode title="Roadmap" eyebrow="MVP" summary={roadmap[0]} items={roadmap.slice(0, 4)} />
-        <BuildNextNode session={selectedSession} recommendation={firstRecommendation} onCreateBuildTask={onCreateBuildTask} />
-      </div>
-
-      <div className="relative z-10 hidden min-h-[650px] xl:block">
-        <Connector className="left-[27%] top-[34%] w-[30%] rotate-6" />
-        <Connector className="left-[52%] top-[35%] w-[26%] -rotate-6" />
-        <Connector className="left-[37%] top-[63%] w-[28%] rotate-90" />
-
-        <ThinkCanvasNode
-          className="absolute left-[34%] top-0 w-[34%]"
-          title="Vision"
-          eyebrow="Direction"
-          summary={selectedSession?.productDirection || "Your service direction will land here."}
-          dormant={!hasSession}
-        />
-        <SpecStatusNode
-          className="absolute left-0 top-0 w-[29%]"
-          spec={spec}
-          clarifyingQuestions={clarifyingQuestions}
-        />
-        <ThinkCanvasNode
-          className="absolute left-0 top-[27%] w-[28%]"
-          title="Features"
-          eyebrow="Ideas"
-          summary={features[0]}
-          items={features.slice(0, 4)}
-          dormant={!hasSession}
-        />
-        <ProductWindowNode
-          className="absolute left-[31%] top-[27%] w-[38%]"
-          session={selectedSession}
-          productWindow={productWindow}
-          onRegenerateProductWindow={onRegenerateProductWindow}
-          onApproveProductWindow={onApproveProductWindow}
-          onCreateProductWindowBuildTask={onCreateProductWindowBuildTask}
-        />
-        <ThinkCanvasNode
-          className="absolute right-0 top-[28%] w-[27%]"
-          title="Design"
-          eyebrow="Product feel"
-          summary={productWindow?.uiPrinciples[0] || "Design direction will appear as the ServiceWindow forms."}
-          items={productWindow?.uiPrinciples.slice(0, 3)}
-          dormant={!productWindow}
-        />
-        <ThinkCanvasNode
-          className="absolute bottom-[4%] left-[31%] w-[34%]"
-          title="Roadmap"
-          eyebrow="MVP"
-          summary={roadmap[0]}
-          items={roadmap.slice(0, 4)}
-          dormant={!hasSession}
-        />
-        <ThinkCanvasNode
-          className="absolute bottom-[1%] left-0 w-[25%]"
-          title="Risks"
-          eyebrow="Watch"
-          summary={risks[0]}
-          items={risks.slice(0, 3)}
-          dormant={!hasSession}
-        />
-        <BuildNextNode
-          className="absolute bottom-[1%] right-0 w-[28%]"
-          session={selectedSession}
-          recommendation={firstRecommendation}
-          onCreateBuildTask={onCreateBuildTask}
-        />
-      </div>
-    </div>
+      <aside className="relative min-h-[760px] overflow-hidden bg-[#060914] p-4 md:p-5">
+        <CanvasBackdrop />
+        <div className="relative z-10 space-y-4">
+          <AgentBlueprintCard service={service} agents={agents} />
+          <ApprovalPointsCard approvalPoints={service.humanApprovalPoints} successMetrics={service.successMetrics} />
+          <BuildReadinessNode
+            spec={spec}
+            questionCount={clarifyingQuestions.filter((question) => question.status !== "answered").length}
+            onGenerateServiceBlueprint={onGenerateServiceBlueprint}
+            onGenerateBuildPlan={onGenerateBuildPlan}
+          />
+          <BuildNextNode session={selectedSession} recommendation={firstRecommendation} onCreateBuildTask={onCreateBuildTask} />
+        </div>
+      </aside>
+    </>
   );
 }
 
-function SpecStatusNode({
+function ServiceSpecCard({
+  service,
+  session,
   spec,
   clarifyingQuestions,
-  className,
 }: {
+  service: BrainpressService;
+  session?: ThinkSession;
   spec?: BrainpressSpec;
   clarifyingQuestions: ClarifyingQuestion[];
-  className?: string;
 }) {
   const openQuestionCount = spec ? Math.max(spec.openQuestions.length, clarifyingQuestions.filter((question) => question.status !== "answered").length) : 0;
-  const needsClarification = spec?.clarificationStatus === "needs_clarification";
+  const status = spec ? (spec.clarificationStatus === "needs_clarification" ? "needs clarification" : "ready") : "draft";
   return (
-    <div
-      className={cx(
-        "rounded-lg border p-4 shadow-2xl backdrop-blur",
-        spec
-          ? "border-violet-300/20 bg-violet-300/[0.07] text-white shadow-violet-950/20"
-          : "border-white/10 bg-white/[0.035] text-slate-400",
-        className,
-      )}
-    >
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-violet-200">Spec Loop</p>
-        <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", needsClarification ? "bg-amber-300/15 text-amber-200" : "bg-emerald-300/15 text-emerald-200")}>
-          {spec ? (needsClarification ? "Needs clarification" : "Clear enough") : "Draft"}
+    <ThinkPanel accent="violet">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-violet-200">Center Column</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-normal text-white">Service Spec</h2>
+        </div>
+        <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", status === "ready" ? "bg-emerald-300/15 text-emerald-200" : status === "draft" ? "bg-white/10 text-slate-300" : "bg-amber-300/15 text-amber-200")}>
+          {status}
         </span>
       </div>
-      <h3 className="text-lg font-semibold tracking-normal">Service Spec</h3>
-      {spec ? (
-        <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
-          <div>
-            <p className="font-mono text-[10px] uppercase text-slate-500">What</p>
-            <p>{shortText(spec.what, 110)}</p>
-          </div>
-          <div>
-            <p className="font-mono text-[10px] uppercase text-slate-500">Why</p>
-            <p>{shortText(spec.why, 110)}</p>
-          </div>
-          <p className="font-mono text-[11px] uppercase text-violet-100">{openQuestionCount} open questions</p>
-        </div>
-      ) : (
-        <p className="mt-2 text-sm leading-6 text-slate-400">A compact spec will appear after Brainpress shapes the first Think session.</p>
-      )}
-    </div>
+      <div className="mt-5 grid gap-3">
+        <SpecField label="Service Promise" value={service.servicePromise || session?.productDirection || "No service promise generated yet."} />
+        <SpecField label="Target Customer" value={service.targetCustomer || session?.targetUser || "Target customer is not clear yet."} />
+        <SpecField label="Desired Outcome" value={service.desiredOutcome || session?.proposedSolution || "Desired outcome will appear after Brainpress understands the Service."} />
+        <SpecField label="What" value={spec?.what || session?.summary || "The Service Spec will define what the agent service must accomplish."} />
+        <SpecField label="Why" value={spec?.why || session?.userProblem || "The Service Spec will capture why this should exist."} />
+      </div>
+      <div className="mt-4 rounded-lg border border-violet-300/15 bg-violet-300/[0.06] p-3">
+        <p className="font-mono text-[11px] uppercase tracking-wide text-violet-100">{openQuestionCount} open questions</p>
+        <p className="mt-1 text-xs leading-5 text-slate-400">Answer open questions before turning this into a build plan.</p>
+      </div>
+    </ThinkPanel>
+  );
+}
+
+function ServiceWorkflowCard({
+  workflow,
+  capabilities,
+  approvalPoints,
+}: {
+  workflow: string[];
+  capabilities: string[];
+  approvalPoints: string[];
+}) {
+  return (
+    <ThinkPanel accent="blue">
+      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">Service Workflow</p>
+      <h3 className="mt-2 text-xl font-semibold text-white">How the Service should work</h3>
+      <CompactList label="workflow" items={workflow} />
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <MiniSummary title="Service Capabilities" items={capabilities} />
+        <MiniSummary title="Approval Points" items={approvalPoints} />
+      </div>
+    </ThinkPanel>
+  );
+}
+
+function RisksUnknownsCard({
+  risks,
+  constraints,
+  openQuestions,
+}: {
+  risks: string[];
+  constraints: string[];
+  openQuestions: string[];
+}) {
+  return (
+    <ThinkPanel accent="amber">
+      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-200">Risks & Unknowns</p>
+      <h3 className="mt-2 text-xl font-semibold text-white">What still needs judgment</h3>
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <MiniSummary title="Unresolved Risks" items={risks} emptyText="No major risks captured yet." />
+        <MiniSummary title="Constraints" items={constraints} emptyText="No explicit constraints yet." />
+        <MiniSummary title="Open Questions" items={openQuestions} emptyText="No open questions yet." />
+      </div>
+    </ThinkPanel>
   );
 }
 
@@ -532,172 +539,116 @@ function CanvasBackdrop() {
   );
 }
 
-function ThinkCanvasNode({
-  title,
-  eyebrow,
-  summary,
-  items = [],
-  dormant = false,
-  className,
+function AgentBlueprintCard({
+  service,
+  agents,
 }: {
-  title: string;
-  eyebrow: string;
-  summary: string;
-  items?: string[];
-  dormant?: boolean;
-  className?: string;
+  service: BrainpressService;
+  agents: ServiceAgent[];
 }) {
+  const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
+  const subAgents = agents.filter((agent) => agent.id !== mainAgent?.id);
   return (
-    <div
-      className={cx(
-        "rounded-lg border p-4 shadow-2xl backdrop-blur",
-        dormant
-          ? "border-white/10 bg-white/[0.035] text-slate-400"
-          : "border-blue-300/20 bg-slate-950/80 text-white shadow-blue-950/30",
-        className,
-      )}
-    >
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">{eyebrow}</p>
-        <span className="h-2 w-2 rounded-full bg-blue-300/70" />
+    <ThinkPanel accent="emerald">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-200">Agent Blueprint</p>
+          <h3 className="mt-2 text-xl font-semibold text-white">Agent Team</h3>
+        </div>
+        <span className="rounded-md bg-emerald-300/10 px-2 py-1 font-mono text-[10px] uppercase text-emerald-100">
+          {agents.length || 0} agents
+        </span>
       </div>
-      <h3 className="text-lg font-semibold tracking-normal">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-300">{shortText(summary)}</p>
-      {items.length ? (
-        <ul className="mt-4 space-y-2 text-xs leading-5 text-slate-400">
-          {items.slice(0, 4).map((item, index) => (
-            <li key={`canvas-node-${title}-${index}-${item}`} className="flex gap-2">
-              <CornerDownRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300/70" />
-              <span>{shortText(item, 96)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+      {mainAgent ? (
+        <div className="mt-4 rounded-lg border border-emerald-300/15 bg-emerald-300/[0.06] p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-semibold text-white">{mainAgent.name}</p>
+            <PermissionBadge level={mainAgent.permissionLevel} />
+          </div>
+          <p className="mt-1 text-xs uppercase tracking-wide text-emerald-100">Main Agent</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{shortText(mainAgent.goal, 140)}</p>
+        </div>
+      ) : (
+        <p className="mt-4 rounded-lg border border-white/10 bg-white/[0.035] p-3 text-sm text-slate-400">
+          No main agent generated yet. Generate the Service Blueprint to propose the agent team.
+        </p>
+      )}
+      <div className="mt-4 space-y-2">
+        {subAgents.length ? (
+          subAgents.slice(0, 4).map((agent, index) => (
+            <div key={`agent-blueprint-${index}-${agent.id}`} className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-white">{agent.name}</p>
+                <PermissionBadge level={agent.permissionLevel} />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">{agent.role}</p>
+            </div>
+          ))
+        ) : (
+          <p className="text-sm leading-6 text-slate-400">Sub-agents will appear when the Service needs specialized roles.</p>
+        )}
+      </div>
+    </ThinkPanel>
   );
 }
 
-function ProductWindowNode({
-  session,
-  productWindow,
-  onRegenerateProductWindow,
-  onApproveProductWindow,
-  onCreateProductWindowBuildTask,
-  className,
+function ApprovalPointsCard({
+  approvalPoints,
+  successMetrics,
 }: {
-  session?: ThinkSession;
-  productWindow?: ProductWindow;
-  onRegenerateProductWindow: (session: ThinkSession) => void;
-  onApproveProductWindow: (productWindow: ProductWindow) => void;
-  onCreateProductWindowBuildTask: (session: ThinkSession, productWindow: ProductWindow) => void;
-  className?: string;
+  approvalPoints: string[];
+  successMetrics: string[];
 }) {
-  const sections = productWindow?.sections.slice(0, 4) || [];
-
   return (
-    <div className={cx("overflow-hidden rounded-lg border border-cyan-300/25 bg-[#101827]/95 shadow-2xl shadow-cyan-950/20", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-white/[0.04] px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-rose-300" />
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
-          </div>
-          <span className="truncate font-mono text-xs text-slate-400">{productWindow?.route || "/product-window/draft"}</span>
+    <ThinkPanel accent="blue">
+      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">Approval Points</p>
+      <h3 className="mt-2 text-xl font-semibold text-white">Human gates</h3>
+      <CompactList label="approval-points" items={approvalPoints} emptyText="Approval points will appear with the Service Blueprint." />
+      <MiniSummary title="Success Metrics" items={successMetrics} emptyText="No success metrics generated yet." />
+    </ThinkPanel>
+  );
+}
+
+function BuildReadinessNode({
+  spec,
+  questionCount,
+  onGenerateServiceBlueprint,
+  onGenerateBuildPlan,
+}: {
+  spec?: BrainpressSpec;
+  questionCount: number;
+  onGenerateServiceBlueprint: () => void;
+  onGenerateBuildPlan: (spec: BrainpressSpec) => void;
+}) {
+  const ready = Boolean(spec && spec.clarificationStatus !== "needs_clarification" && questionCount === 0);
+  return (
+    <ThinkPanel accent={ready ? "emerald" : "amber"}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className={cx("font-mono text-[11px] font-semibold uppercase tracking-wide", ready ? "text-emerald-200" : "text-amber-200")}>
+            Build Readiness
+          </p>
+          <h3 className="mt-2 text-xl font-semibold text-white">{ready ? "Ready for Build" : "Needs clarification"}</h3>
         </div>
-        <CanvasTag>Service UI</CanvasTag>
+        {ready ? <CheckCircle2 className="h-5 w-5 text-emerald-200" /> : <Sparkles className="h-5 w-5 text-amber-200" />}
       </div>
-
-      <div className="p-4">
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-cyan-200">Service UI Example Window</p>
-        <h3 className="mt-2 text-xl font-semibold text-white">{productWindow?.title || "Service UI Example Window"}</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-300">
-          {productWindow?.screenDescription || "A conceptual browser preview will appear here after the first Think session."}
-        </p>
-
-        <div className="mt-4 overflow-hidden rounded-xl border border-cyan-300/15 bg-slate-950/80">
-          <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-cyan-300/[0.06] px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Agent-built preview page</p>
-            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2.5 py-1 text-[11px] text-cyan-100">
-              Concept
-            </span>
-          </div>
-
-          <div className="p-4">
-            <div className="overflow-hidden rounded-lg border border-white/10 bg-[#f8fafc] text-slate-950 shadow-2xl shadow-cyan-950/20">
-              <div className="flex items-center justify-between border-b border-slate-200 bg-white/90 px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-slate-900" />
-                  <span className="text-xs font-semibold">{productWindow?.title || "Draft service"}</span>
-                </div>
-                <span className="rounded-md bg-slate-950 px-3 py-1.5 text-[11px] font-semibold text-white">
-                  {productWindow?.primaryCTA || "Think with Brainpress"}
-                </span>
-              </div>
-
-              <div className="grid gap-0 md:grid-cols-[1.05fr_0.95fr]">
-                <div className="min-h-56 bg-white p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-600">Service UI</p>
-                  <h4 className="mt-3 text-2xl font-semibold tracking-normal">
-                    {sections[0]?.title || productWindow?.title || "Shape the product"}
-                  </h4>
-                  <p className="mt-3 text-sm leading-6 text-slate-600">
-                    {shortText(sections[0]?.content || productWindow?.screenDescription || "A clean first screen will appear here after the first Think session.", 150)}
-                  </p>
-                  <div className="mt-5 flex gap-2">
-                    <span className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white">
-                      {productWindow?.primaryCTA || "Start"}
-                    </span>
-                    <span className="rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Preview flow</span>
-                  </div>
-                </div>
-
-                <div className="grid gap-2 bg-slate-100 p-4">
-                  {(sections.length ? sections.slice(1, 4) : [
-                    { id: "draft-1", title: "Vision", content: "Direction card" },
-                    { id: "draft-2", title: "Flow", content: "Founder path" },
-                    { id: "draft-3", title: "Next", content: "Build task" },
-                  ]).map((section, index) => (
-                    <div key={`product-window-page-card-${index}-${section.id}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                      <div className="mb-2 h-1.5 w-12 rounded-full bg-blue-500/80" />
-                      <p className="text-xs font-semibold">{section.title}</p>
-                      <p className="mt-1 text-[11px] leading-4 text-slate-500">{shortText(section.content, 70)}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {!sections.length ? (
-              <p className="mt-3 text-xs text-slate-500">Draft preview. Start a conversation to generate the ServiceWindow.</p>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {session ? (
-            <Button onClick={() => onRegenerateProductWindow(session)}>
-              <Wand2 className="h-4 w-4" />
-              Regenerate
-            </Button>
-          ) : null}
-          {productWindow ? (
-            <>
-              <Button onClick={() => onApproveProductWindow(productWindow)}>
-                <CheckCircle2 className="h-4 w-4" />
-                Approve
-              </Button>
-              {session ? (
-                <Button variant="primary" onClick={() => onCreateProductWindowBuildTask(session, productWindow)}>
-                  <Plus className="h-4 w-4" />
-                  Create Build Task
-                </Button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
+      <p className="mt-3 text-sm leading-6 text-slate-300">
+        {ready
+          ? "The Service Spec is clear enough to generate the technical plan and ordered Codex tasks."
+          : "Generate or refine the Service Blueprint before handing work to Build."}
+      </p>
+      <div className="mt-4">
+        {ready && spec ? (
+          <Button variant="primary" onClick={() => onGenerateBuildPlan(spec)}>
+            Generate Build Plan
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={onGenerateServiceBlueprint}>
+            Generate Service Blueprint
+          </Button>
+        )}
       </div>
-    </div>
+    </ThinkPanel>
   );
 }
 
@@ -714,8 +665,8 @@ function BuildNextNode({
 }) {
   return (
     <div className={cx("rounded-lg border border-emerald-300/20 bg-emerald-300/[0.07] p-4 text-white shadow-2xl shadow-emerald-950/10", className)}>
-      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-200">Build Next</p>
-      <h3 className="mt-2 text-lg font-semibold">{recommendation?.title || "Recommended Build task"}</h3>
+      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-200">Next Build Step</p>
+      <h3 className="mt-2 text-lg font-semibold">{recommendation?.title || "No Build step selected yet"}</h3>
       <p className="mt-2 text-sm leading-6 text-slate-300">
         {recommendation?.reason || "Brainpress will suggest the next agent-ready task after it understands the direction."}
       </p>
@@ -727,6 +678,71 @@ function BuildNextNode({
       ) : null}
     </div>
   );
+}
+
+function ThinkPanel({
+  children,
+  accent = "blue",
+}: {
+  children: ReactNode;
+  accent?: "blue" | "violet" | "emerald" | "amber";
+}) {
+  const styles = {
+    blue: "border-blue-300/20 bg-slate-950/80 shadow-blue-950/20",
+    violet: "border-violet-300/20 bg-violet-300/[0.07] shadow-violet-950/20",
+    emerald: "border-emerald-300/20 bg-emerald-300/[0.07] shadow-emerald-950/20",
+    amber: "border-amber-300/20 bg-amber-300/[0.06] shadow-amber-950/10",
+  };
+  return <div className={cx("rounded-lg border p-4 text-white shadow-2xl backdrop-blur", styles[accent])}>{children}</div>;
+}
+
+function SpecField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+      <p className="font-mono text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-300">{shortText(value, 180)}</p>
+    </div>
+  );
+}
+
+function MiniSummary({ title, items, emptyText = "Not enough service context yet." }: { title: string; items: string[]; emptyText?: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
+      <p className="font-mono text-[10px] uppercase tracking-wide text-slate-500">{title}</p>
+      <CompactList label={title} items={items} emptyText={emptyText} compact />
+    </div>
+  );
+}
+
+function CompactList({
+  label,
+  items,
+  emptyText = "Nothing captured yet.",
+  compact = false,
+}: {
+  label: string;
+  items: string[];
+  emptyText?: string;
+  compact?: boolean;
+}) {
+  const visibleItems = uniqueText(items).slice(0, compact ? 3 : 5);
+  if (!visibleItems.length) return <p className="mt-2 text-xs leading-5 text-slate-500">{emptyText}</p>;
+  return (
+    <ul className={cx("mt-3 space-y-2", compact ? "text-xs leading-5 text-slate-400" : "text-sm leading-6 text-slate-300")}>
+      {visibleItems.map((item, index) => (
+        <li key={`compact-list-${label}-${index}-${item}`} className="flex gap-2">
+          <CornerDownRight className="mt-1 h-3.5 w-3.5 shrink-0 text-blue-300/70" />
+          <span>{shortText(item, compact ? 90 : 130)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PermissionBadge({ level }: { level: ServiceAgent["permissionLevel"] }) {
+  const label = level.replaceAll("_", " ");
+  const tone = level === "founder_approval_required" ? "bg-amber-300/15 text-amber-100" : level === "high" ? "bg-rose-300/15 text-rose-100" : "bg-blue-300/15 text-blue-100";
+  return <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", tone)}>{label}</span>;
 }
 
 function ChatBubble({
@@ -765,10 +781,6 @@ function ChatBubble({
       <p className={cx("whitespace-pre-line", pending && "animate-pulse text-slate-400")}>{text}</p>
     </div>
   );
-}
-
-function Connector({ className }: { className: string }) {
-  return <div className={cx("absolute h-px bg-gradient-to-r from-transparent via-blue-300/25 to-transparent", className)} />;
 }
 
 function CanvasTag({ children }: { children: ReactNode }) {
@@ -812,11 +824,11 @@ function assistantResponseFromThinkResult(result: { session: ThinkSession; produ
   const taskCount = result.session.recommendedBuildTasks.length;
   const pieces = [
     `I shaped this into a service direction: ${result.session.summary}`,
-    `I also updated the canvas with Vision, Roadmap, Features, Risks, and a ServiceWindow preview.`,
+    `I also updated the canvas with Service Spec, Service Workflow, Risks, Agent Blueprint, and Build Readiness.`,
     taskCount
-      ? `I found ${taskCount} possible Build ${taskCount === 1 ? "task" : "tasks"}. You can create ${taskCount === 1 ? "it" : "them"} from the canvas.`
+      ? `I found ${taskCount} possible Next Build ${taskCount === 1 ? "step" : "steps"}. You can create ${taskCount === 1 ? "it" : "them"} from the canvas.`
       : "I did not find a Build task yet. Add more detail and I will turn it into agent-ready work.",
-    result.productWindow ? "I also created a ServiceWindow preview so you can see the service direction before building." : "",
+    result.productWindow ? "I also prepared ServiceWindow data. Open the ServiceWindow tab when you want to generate or review UI/UX." : "",
   ].filter(Boolean);
   return pieces.join("\n\n");
 }
@@ -842,13 +854,25 @@ function shortText(value: string, max = 140) {
   return `${clean.slice(0, max - 3).trim()}...`;
 }
 
+function uniqueText(items: string[]) {
+  const seen = new Set<string>();
+  return items
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function formatThinkMode(mode: ThinkMode) {
   const labels: Record<ThinkMode, string> = {
     open_thinking: "Open thinking",
     clarify_idea: "Clarify idea",
     define_mvp: "Define MVP",
-    create_feature_spec: "Feature spec",
-    plan_roadmap: "Roadmap",
+    create_feature_spec: "Service spec",
+    plan_roadmap: "Build path",
     make_decision: "Decision",
     analyze_risk: "Risk",
   };
@@ -857,10 +881,10 @@ function formatThinkMode(mode: ThinkMode) {
 
 function formatThinkArtifactType(type: ThinkArtifactType) {
   const labels: Record<ThinkArtifactType, string> = {
-    product_brief: "Product Brief",
-    roadmap: "Roadmap",
+    product_brief: "Service Brief",
+    roadmap: "Build Path",
     decision_memo: "Decisions",
-    feature_spec: "Feature Specs",
+    feature_spec: "Service Spec",
     risk_analysis: "Risk Analysis",
     mvp_scope: "MVP Scope",
   };
