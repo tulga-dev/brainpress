@@ -87,6 +87,13 @@ export type ProductWindowSectionType =
   | "infrastructure_panel"
   | "feedback_panel";
 export type ProductWindowStatus = "draft" | "generated" | "approved" | "converted_to_build";
+export type BrainpressSpecClarificationStatus = "clear_enough" | "needs_clarification";
+export type ClarifyingQuestionStatus = "open" | "answered";
+export type SpecTaskStatus = "draft" | "ready" | "in_progress" | "done";
+export type BrainpressServiceStage = "idea" | "needs_clarification" | "spec_ready" | "build_ready" | "running";
+export type ServiceAgentPermissionLevel = "low" | "medium" | "high" | "founder_approval_required";
+export type ServiceAgentStatus = "proposed" | "active" | "needs_setup" | "paused";
+export type ServiceWindowStatus = "empty" | "generated" | "needs_refinement";
 export type AgentRunStatus =
   | "Draft"
   | "Prepared"
@@ -126,6 +133,65 @@ export interface Project {
   verificationCommands: string[];
   safetyRules: string;
   createdAt: string;
+}
+
+export interface BrainpressService {
+  id: string;
+  name: string;
+  description: string;
+  servicePromise: string;
+  targetCustomer: string;
+  desiredOutcome: string;
+  currentStage: BrainpressServiceStage;
+  mainAgentId: string;
+  agentIds: string[];
+  serviceWorkflow: string[];
+  humanApprovalPoints: string[];
+  successMetrics: string[];
+  openQuestions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceAgent {
+  id: string;
+  serviceId: string;
+  name: string;
+  role: string;
+  goal: string;
+  inputs: string[];
+  outputs: string[];
+  tools: string[];
+  memoryScope: string;
+  permissionLevel: ServiceAgentPermissionLevel;
+  escalationRules: string[];
+  successMetric: string;
+  status: ServiceAgentStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceWindowScreen {
+  id: string;
+  name: string;
+  purpose: string;
+  keyComponents: string[];
+  userInputs: string[];
+  serviceOutputs: string[];
+  agentInteractions: string[];
+  approvalPoints: string[];
+}
+
+export interface ServiceWindow {
+  id: string;
+  serviceId: string;
+  status: ServiceWindowStatus;
+  screens: ServiceWindowScreen[];
+  primaryFlow: string[];
+  agentInteractionPoints: string[];
+  humanApprovalPoints: string[];
+  generatedAt?: string;
+  updatedAt: string;
 }
 
 export interface Memory {
@@ -197,8 +263,12 @@ export interface DevelopmentTask {
   codexRunId?: string;
   externalRunUrl?: string;
   runIssueId?: string;
+  serviceId?: string;
   sourceThinkSessionId?: string;
   sourceProductWindowId?: string;
+  sourceSpecId?: string;
+  sourcePlanId?: string;
+  sourceSpecTaskId?: string;
   agentSource?: BrainpressAgentSource;
   agentModel?: string;
   agentError?: string;
@@ -267,6 +337,84 @@ export interface ProductWindow {
   userFlow: string[];
   openQuestions: string[];
   status: ProductWindowStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrainpressConstitution {
+  id: string;
+  projectId: string;
+  principles: string[];
+  qualityRules: string[];
+  testingRules: string[];
+  architectureRules: string[];
+  uxRules: string[];
+  safetyRules: string[];
+  approvalRules: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrainpressSpec {
+  id: string;
+  projectId: string;
+  serviceId?: string;
+  thinkSessionId?: string;
+  productWindowId?: string;
+  title: string;
+  what: string;
+  why: string;
+  userStories: string[];
+  successCriteria: string[];
+  nonGoals: string[];
+  assumptions: string[];
+  openQuestions: string[];
+  clarificationStatus: BrainpressSpecClarificationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClarifyingQuestion {
+  id: string;
+  specId: string;
+  question: string;
+  reason: string;
+  answer?: string;
+  status: ClarifyingQuestionStatus;
+}
+
+export interface BrainpressPlan {
+  id: string;
+  projectId: string;
+  serviceId?: string;
+  specId: string;
+  technologyChoices: string[];
+  architectureNotes: string[];
+  dataModel: string[];
+  apiContracts: string[];
+  risks: string[];
+  validationPlan: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpecTask {
+  id: string;
+  title: string;
+  description: string;
+  dependsOn: string[];
+  acceptanceCriteria: string[];
+  verificationCommands: string[];
+  status: SpecTaskStatus;
+}
+
+export interface BrainpressTaskList {
+  id: string;
+  projectId: string;
+  serviceId?: string;
+  planId: string;
+  tasks: SpecTask[];
+  dependencyOrder: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -471,12 +619,20 @@ export interface ProjectImport {
 }
 
 export interface BrainpressState {
+  services: BrainpressService[];
+  serviceAgents: ServiceAgent[];
+  serviceWindows: ServiceWindow[];
   projects: Project[];
   memories: Record<string, Memory>;
   outcomes: Outcome[];
   prompts: AgentPrompt[];
   thinkSessions: ThinkSession[];
   productWindows: ProductWindow[];
+  constitutions: BrainpressConstitution[];
+  specs: BrainpressSpec[];
+  clarifyingQuestions: ClarifyingQuestion[];
+  plans: BrainpressPlan[];
+  taskLists: BrainpressTaskList[];
   developmentTasks: DevelopmentTask[];
   developmentTaskResults: DevelopmentTaskResult[];
   runIssues: RunIssue[];

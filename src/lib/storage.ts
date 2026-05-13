@@ -5,8 +5,16 @@ import { defaultPermissionSafetyRules, ensurePermissionSafetyRules } from "@/lib
 import { buildCodexCommandPreview } from "@/lib/codex-shared";
 import { normalizeDevelopmentTask } from "@/lib/development-tasks";
 import { normalizeDevelopmentTaskResult } from "@/lib/development-task-results";
+import { createDefaultServiceAgents, createEmptyServiceWindow, createServiceFromProject, normalizeService, normalizeServiceAgent, normalizeServiceWindow } from "@/lib/services";
 import { normalizeProductWindow } from "@/lib/product-window";
 import { normalizeRunIssue } from "@/lib/run-agents";
+import {
+  normalizeClarifyingQuestion,
+  normalizeConstitution,
+  normalizePlan,
+  normalizeSpec,
+  normalizeTaskList,
+} from "@/lib/spec-loop";
 import { normalizeThinkSession } from "@/lib/think-sessions";
 import type { AgentPrompt, AgentRun, BrainpressState, BuildLog, ConsolidatedProjectMemory, Memory, Project, ProjectImport } from "@/lib/types";
 
@@ -44,6 +52,9 @@ export function resetBrainpressState() {
 
 function normalizeBrainpressState(state: BrainpressState): BrainpressState {
   const projects = ensureSeedProjects(state.projects.map(normalizeProject));
+  const services = ensureServices(projects, state.services || []);
+  const serviceAgents = ensureServiceAgents(services, state.serviceAgents || []);
+  const serviceWindows = ensureServiceWindows(services, state.serviceWindows || []);
   const safetyRulesByProject = new Map(projects.map((project) => [project.id, project.safetyRules]));
   const projectIdByOutcome = new Map(state.outcomes.map((outcome) => [outcome.id, outcome.projectId]));
   const memories = Object.fromEntries(
@@ -56,6 +67,9 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
 
   return {
     ...state,
+    services,
+    serviceAgents,
+    serviceWindows,
     projects,
     memories,
     prompts: (state.prompts || []).map((prompt) =>
@@ -63,6 +77,11 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     ),
     thinkSessions: (state.thinkSessions || []).map(normalizeThinkSession),
     productWindows: (state.productWindows || []).map(normalizeProductWindow),
+    constitutions: (state.constitutions || []).map(normalizeConstitution),
+    specs: (state.specs || []).map((spec) => normalizeSpec({ ...spec, serviceId: spec.serviceId || spec.projectId })),
+    clarifyingQuestions: (state.clarifyingQuestions || []).map(normalizeClarifyingQuestion),
+    plans: (state.plans || []).map((plan) => normalizePlan({ ...plan, serviceId: plan.serviceId || plan.projectId })),
+    taskLists: (state.taskLists || []).map((taskList) => normalizeTaskList({ ...taskList, serviceId: taskList.serviceId || taskList.projectId })),
     developmentTasks: (state.developmentTasks || []).map((task) => normalizeDevelopmentTask(task, projectById.get(task.projectId))),
     developmentTaskResults: (state.developmentTaskResults || []).map(normalizeDevelopmentTaskResult),
     runIssues: (state.runIssues || []).map(normalizeRunIssue),
@@ -70,6 +89,30 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     buildLogs: (state.buildLogs || []).map(normalizeBuildLog),
     imports: normalizeProjectImports(state.imports || []),
   };
+}
+
+function ensureServices(projects: Project[], services: Partial<BrainpressState["services"][number]>[]) {
+  const serviceById = new Map((services || []).map((service) => [service.id || "", service]));
+  return projects.map((project) => normalizeService(serviceById.get(project.id) || {}, project));
+}
+
+function ensureServiceAgents(services: BrainpressState["services"], agents: Partial<BrainpressState["serviceAgents"][number]>[]) {
+  const normalized = (agents || []).map((agent) => normalizeServiceAgent(agent));
+  const agentsByService = new Map<string, BrainpressState["serviceAgents"]>();
+  for (const agent of normalized) {
+    agentsByService.set(agent.serviceId, [...(agentsByService.get(agent.serviceId) || []), agent]);
+  }
+
+  return services.flatMap((service) => {
+    const existing = agentsByService.get(service.id) || [];
+    if (existing.length) return existing;
+    return createDefaultServiceAgents(service, service.updatedAt);
+  });
+}
+
+function ensureServiceWindows(services: BrainpressState["services"], windows: Partial<BrainpressState["serviceWindows"][number]>[]) {
+  const windowByService = new Map((windows || []).map((window) => [window.serviceId || "", window]));
+  return services.map((service) => normalizeServiceWindow(windowByService.get(service.id) || createEmptyServiceWindow(service.id, service.updatedAt), service.id));
 }
 
 function ensureSeedProjects(projects: Project[]) {

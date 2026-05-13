@@ -19,6 +19,15 @@ import { generateCodexGoalText } from "@/lib/codex-goal";
 import { callBrainpressAgent, type BuildAgentResult, type RunAgentResult, type ThinkAgentResult } from "@/lib/agent-gateway";
 import { createDevelopmentTaskFromProductWindow, createProductWindowFromThinkSession } from "@/lib/product-window";
 import { createDevelopmentTaskFromRunIssue, createRunIssue } from "@/lib/run-agents";
+import { createServiceWindowCodexPrompt, generateServiceBlueprint, generateServiceWindow } from "@/lib/services";
+import {
+  createClarifyingQuestions,
+  createConstitution,
+  createDevelopmentTasksFromSpecTasks,
+  createPlanFromSpec,
+  createSpecFromThinkSession,
+  createTaskListFromPlan,
+} from "@/lib/spec-loop";
 import { createDevelopmentTaskFromThinkRecommendation, createThinkSession } from "@/lib/think-sessions";
 import { applyProductWindowSuggestion, ThinkOperatingTab, type ThinkCreationResult } from "@/components/brainpress/think-workspace";
 import {
@@ -49,11 +58,17 @@ import type {
   DevelopmentTaskResult,
   DevelopmentTaskStatus,
   DevelopmentTaskType,
+  BrainpressSpec,
+  BrainpressPlan,
+  BrainpressTaskList,
+  BrainpressService,
   Memory,
   ProductWindow,
   Project,
   RecommendedBuildTask,
   RunIssue,
+  ServiceAgent,
+  ServiceWindow,
   BrainpressAgentSource,
   ThinkArtifactType,
   ThinkMode,
@@ -75,7 +90,7 @@ import {
   cx,
 } from "@/components/brainpress/ui";
 
-const tabs = ["Think", "Build", "Run"] as const;
+const tabs = ["Overview", "Agent Team", "ServiceWindow", "Think", "Build", "Run"] as const;
 type Tab = (typeof tabs)[number];
 interface LocalBridgeUiState {
   ok: boolean;
@@ -100,7 +115,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     signIn,
     signOut,
   } = useBrainpress();
-  const [activeTab, setActiveTab] = useState<Tab>("Think");
+  const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [cloudEmail, setCloudEmail] = useState("");
   const [syncPromptDismissed, setSyncPromptDismissed] = useState(false);
   const [showCloudSignInForm, setShowCloudSignInForm] = useState(false);
@@ -124,9 +139,16 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [thinkingWithAgent, setThinkingWithAgent] = useState(false);
   const [buildingWithAgent, setBuildingWithAgent] = useState(false);
   const [runningWithAgent, setRunningWithAgent] = useState(false);
+  const [serviceWindowCopied, setServiceWindowCopied] = useState(false);
 
   const project = state.projects.find((item) => item.id === projectId);
   const memory = project ? state.memories[project.id] : undefined;
+  const service = state.services.find((item) => item.id === projectId);
+  const serviceAgents = useMemo(
+    () => (state.serviceAgents || []).filter((agent) => agent.serviceId === projectId),
+    [projectId, state.serviceAgents],
+  );
+  const serviceWindow = (state.serviceWindows || []).find((window) => window.serviceId === projectId);
   const developmentTasks = useMemo(
     () => (state.developmentTasks || []).filter((task) => task.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [projectId, state.developmentTasks],
@@ -150,6 +172,22 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     () => (state.productWindows || []).filter((window) => window.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [projectId, state.productWindows],
   );
+  const specs = useMemo(
+    () => (state.specs || []).filter((spec) => spec.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [projectId, state.specs],
+  );
+  const clarifyingQuestions = useMemo(() => {
+    const specIds = new Set(specs.map((spec) => spec.id));
+    return (state.clarifyingQuestions || []).filter((question) => specIds.has(question.specId));
+  }, [specs, state.clarifyingQuestions]);
+  const plans = useMemo(
+    () => (state.plans || []).filter((plan) => plan.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [projectId, state.plans],
+  );
+  const taskLists = useMemo(
+    () => (state.taskLists || []).filter((taskList) => taskList.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [projectId, state.taskLists],
+  );
   const runIssues = useMemo(
     () => (state.runIssues || []).filter((issue) => issue.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [projectId, state.runIssues],
@@ -160,8 +198,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         <div className="mx-auto max-w-3xl">
           <Panel>
             <PanelBody>
-              <SectionHeader title="Project not found" eyebrow="Brainpress" />
-              <p className="text-slateText">This local workspace does not contain that project. Return to the dashboard and create a new one.</p>
+              <SectionHeader title="Service not found" eyebrow="Brainpress" />
+              <p className="text-slateText">This workspace does not contain that Service. Return to Services and create a new one.</p>
               <Button className="mt-5" onClick={() => router.push("/")}>
                 <ArrowLeft className="h-4 w-4" />
                 Dashboard
@@ -175,6 +213,32 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
   const activeProject: Project = project;
   const activeMemory: Memory = memory;
+  const activeService: BrainpressService = service || {
+    id: activeProject.id,
+    name: activeProject.name,
+    description: activeProject.description,
+    servicePromise: activeProject.primaryGoal,
+    targetCustomer: activeMemory.targetUsers || "Founder-builders",
+    desiredOutcome: activeProject.primaryGoal,
+    currentStage: "idea",
+    mainAgentId: `agent_${activeProject.id}_main`,
+    agentIds: serviceAgents.map((agent) => agent.id),
+    serviceWorkflow: [
+      "Capture the user or founder request.",
+      "Clarify the desired outcome and missing context.",
+      "Route implementation work to Codex only after approval.",
+      "Verify results against acceptance criteria.",
+    ],
+    humanApprovalPoints: [
+      "Before Codex dispatch.",
+      "Before merge, deploy, or verified status.",
+      "Before accessing secrets, production data, or services outside the selected service scope.",
+    ],
+    successMetrics: ["The service delivers its promised outcome.", "Verification evidence is captured before work is marked complete."],
+    openQuestions: [],
+    createdAt: activeProject.createdAt,
+    updatedAt: activeProject.createdAt,
+  };
   function updateDevelopmentTask(taskId: string, patch: Partial<DevelopmentTask>) {
     setState((current) => ({
       ...current,
@@ -237,10 +301,21 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         }),
         agentResult.productWindowSuggestion,
       );
+      const spec = createSpecFromThinkSession({
+        session,
+        productWindow,
+        project: activeProject,
+      });
+      const questions = createClarifyingQuestions(spec);
       setState((current) => ({
         ...current,
         thinkSessions: [session, ...(current.thinkSessions || [])],
         productWindows: [productWindow, ...(current.productWindows || [])],
+        constitutions: current.constitutions?.some((constitution) => constitution.projectId === activeProject.id)
+          ? current.constitutions
+          : [createConstitution(activeProject), ...(current.constitutions || [])],
+        specs: [spec, ...(current.specs || [])],
+        clarifyingQuestions: [...questions, ...(current.clarifyingQuestions || [])],
       }));
       setSelectedThinkSessionId(session.id);
       setThinkDirectionInput("");
@@ -401,6 +476,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       const agentResult = agentResponse.result as BuildAgentResult;
       const taskDraft: DevelopmentTask = {
         ...localTask,
+        serviceId: activeService.id,
         title: agentResult.title || localTask.title,
         description: normalizedInput,
         taskType: agentResult.taskType || localTask.taskType,
@@ -465,12 +541,17 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }
 
   function createBuildTaskFromThinkSession(session: ThinkSession, recommendation: RecommendedBuildTask) {
-    const task = createDevelopmentTaskFromThinkRecommendation({
-      session,
-      recommendation,
-      project: activeProject,
-      memory: activeMemory,
-    });
+    const sourceSpec = specs.find((spec) => spec.thinkSessionId === session.id);
+    const task = {
+      ...createDevelopmentTaskFromThinkRecommendation({
+        session,
+        recommendation,
+        project: activeProject,
+        memory: activeMemory,
+      }),
+      serviceId: activeService.id,
+      sourceSpecId: sourceSpec?.id,
+    };
     setState((current) => ({
       ...current,
       developmentTasks: [task, ...(current.developmentTasks || [])],
@@ -491,9 +572,23 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       session,
       project: activeProject,
     });
+    const spec = createSpecFromThinkSession({
+      session,
+      productWindow,
+      project: activeProject,
+    });
+    const questions = createClarifyingQuestions(spec);
     setState((current) => ({
       ...current,
       productWindows: [productWindow, ...(current.productWindows || []).filter((item) => item.thinkSessionId !== session.id)],
+      specs: [spec, ...(current.specs || []).filter((item) => item.thinkSessionId !== session.id)],
+      clarifyingQuestions: [
+        ...questions,
+        ...(current.clarifyingQuestions || []).filter((question) => {
+          const oldSpecIds = new Set((current.specs || []).filter((item) => item.thinkSessionId === session.id).map((item) => item.id));
+          return !oldSpecIds.has(question.specId);
+        }),
+      ],
     }));
     setSelectedThinkSessionId(session.id);
   }
@@ -512,12 +607,17 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }
 
   function createBuildTaskFromProductWindow(session: ThinkSession, productWindow: ProductWindow) {
-    const task = createDevelopmentTaskFromProductWindow({
-      productWindow,
-      session,
-      project: activeProject,
-      memory: activeMemory,
-    });
+    const sourceSpec = specs.find((spec) => spec.thinkSessionId === session.id || spec.productWindowId === productWindow.id);
+    const task = {
+      ...createDevelopmentTaskFromProductWindow({
+        productWindow,
+        session,
+        project: activeProject,
+        memory: activeMemory,
+      }),
+      serviceId: activeService.id,
+      sourceSpecId: sourceSpec?.id,
+    };
     const now = new Date().toISOString();
     setState((current) => ({
       ...current,
@@ -531,8 +631,101 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }));
     setSelectedThinkSessionId(session.id);
     setSelectedDevTaskId(task.id);
-    setDevelopmentTaskDispatchMessage("Build task created from Product Window.");
+    setDevelopmentTaskDispatchMessage("Build task created from ServiceWindow.");
     setActiveTab("Build");
+  }
+
+  function createPlanAndTasksFromSpec(spec: BrainpressSpec) {
+    const plan = createPlanFromSpec({
+      spec,
+      project: activeProject,
+    });
+    const taskList = createTaskListFromPlan(plan);
+    const tasks = createDevelopmentTasksFromSpecTasks({
+      taskList,
+      project: activeProject,
+      memory: activeMemory,
+      spec,
+      plan,
+    }).map((task) => ({ ...task, serviceId: activeService.id }));
+    setState((current) => ({
+      ...current,
+      plans: [plan, ...(current.plans || [])],
+      taskLists: [taskList, ...(current.taskLists || [])],
+      developmentTasks: [...tasks, ...(current.developmentTasks || [])],
+    }));
+    setSelectedDevTaskId(tasks[0]?.id || "");
+    setDevelopmentTaskDispatchMessage("Technical plan and ordered Build tasks generated from the Service Spec.");
+    setActiveTab("Build");
+  }
+
+  function generateServiceBlueprintForWorkspace() {
+    const latestSpec = specs[0];
+    const blueprint = generateServiceBlueprint({
+      service: activeService,
+      agents: serviceAgents,
+      spec: latestSpec,
+      memory: activeMemory,
+    });
+    setState((current) => ({
+      ...current,
+      services: [blueprint.service, ...(current.services || []).filter((item) => item.id !== activeService.id)],
+      serviceAgents: [
+        ...blueprint.agents,
+        ...(current.serviceAgents || []).filter((agent) => agent.serviceId !== activeService.id),
+      ],
+    }));
+    setActiveTab("Agent Team");
+  }
+
+  function generateServiceUi() {
+    const latestSpec = specs[0];
+    const latestPlan = latestSpec ? plans.find((plan) => plan.specId === latestSpec.id) || plans[0] : plans[0];
+    const blueprint = generateServiceBlueprint({
+      service: activeService,
+      agents: serviceAgents,
+      spec: latestSpec,
+      memory: activeMemory,
+    });
+    const window = generateServiceWindow({
+      service: blueprint.service,
+      agents: blueprint.agents,
+      spec: latestSpec,
+      plan: latestPlan,
+    });
+    setState((current) => ({
+      ...current,
+      services: [blueprint.service, ...(current.services || []).filter((item) => item.id !== activeService.id)],
+      serviceAgents: [
+        ...blueprint.agents,
+        ...(current.serviceAgents || []).filter((agent) => agent.serviceId !== activeService.id),
+      ],
+      serviceWindows: [window, ...(current.serviceWindows || []).filter((item) => item.serviceId !== activeService.id)],
+    }));
+    setActiveTab("ServiceWindow");
+  }
+
+  async function copyServiceUiPrompt() {
+    const latestSpec = specs[0];
+    const latestPlan = latestSpec ? plans.find((plan) => plan.specId === latestSpec.id) || plans[0] : plans[0];
+    const window = serviceWindow || generateServiceWindow({
+      service: activeService,
+      agents: serviceAgents,
+      spec: latestSpec,
+      plan: latestPlan,
+    });
+    await navigator.clipboard.writeText(createServiceWindowCodexPrompt({
+      service: activeService,
+      agents: serviceAgents,
+      serviceWindow: window,
+      spec: latestSpec,
+      plan: latestPlan,
+      taskLists,
+      developmentTasks,
+      memory: activeMemory,
+    }));
+    setServiceWindowCopied(true);
+    setTimeout(() => setServiceWindowCopied(false), 1400);
   }
 
   async function reviewRunIssue(input = runIssueInput) {
@@ -584,11 +777,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }
 
   function createBuildTaskFromRunIssue(issue: RunIssue) {
-    const task = createDevelopmentTaskFromRunIssue({
-      issue,
-      project: activeProject,
-      memory: activeMemory,
-    });
+    const task = {
+      ...createDevelopmentTaskFromRunIssue({
+        issue,
+        project: activeProject,
+        memory: activeMemory,
+      }),
+      serviceId: activeService.id,
+    };
     setState((current) => ({
       ...current,
       developmentTasks: [task, ...(current.developmentTasks || [])],
@@ -767,15 +963,15 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               </Link>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-2xl font-semibold text-white">{project.name}</h1>
+                  <h1 className="text-2xl font-semibold text-white">{activeService.name}</h1>
                   <span className="rounded-md border border-blue-300/20 bg-blue-400/10 px-2 py-1 text-xs font-medium text-blue-100">
-                    AI software cofounder
+                    Agent-native Service
                   </span>
                   <span className="rounded-md border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-xs font-medium text-emerald-100">
                     Human approval required
                   </span>
                 </div>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">{project.primaryGoal}</p>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">{activeService.servicePromise}</p>
               </div>
             </div>
             <div className="min-w-[280px] rounded-lg border border-white/10 bg-slate-950/70 p-3 text-sm text-slate-300">
@@ -868,12 +1064,45 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           </nav>
         </header>
 
+        {activeTab === "Overview" ? (
+          <ServiceOverviewTab
+            service={activeService}
+            agents={serviceAgents}
+            specs={specs}
+            plans={plans}
+            tasks={developmentTasks}
+            runIssues={runIssues}
+            serviceWindow={serviceWindow}
+            onGenerateServiceBlueprint={generateServiceBlueprintForWorkspace}
+            onGenerateServiceWindow={generateServiceUi}
+            onCopyCodexPrompt={copyServiceUiPrompt}
+            copied={serviceWindowCopied}
+          />
+        ) : null}
+
+        {activeTab === "Agent Team" ? (
+          <AgentTeamTab service={activeService} agents={serviceAgents} />
+        ) : null}
+
+        {activeTab === "ServiceWindow" ? (
+          <ServiceWindowTab
+            service={activeService}
+            agents={serviceAgents}
+            serviceWindow={serviceWindow}
+            onGenerate={generateServiceUi}
+            onCopyCodexPrompt={copyServiceUiPrompt}
+            copied={serviceWindowCopied}
+          />
+        ) : null}
+
         {activeTab === "Think" ? (
           <ThinkOperatingTab
-            projectName={activeProject.name}
+            projectName={activeService.name}
             directionInput={thinkDirectionInput}
             sessions={thinkSessions}
             productWindows={productWindows}
+            specs={specs}
+            clarifyingQuestions={clarifyingQuestions}
             selectedSessionId={selectedThinkSessionId}
             mode={thinkMode}
             artifactType={thinkArtifactType}
@@ -897,6 +1126,9 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                 project={activeProject}
                 tasks={developmentTasks}
                 taskResults={developmentTaskResults}
+                specs={specs}
+                plans={plans}
+                taskLists={taskLists}
                 inboxValue={devTaskInput}
                 selectedTaskId={selectedDevTaskId}
                 resultInput={devTaskResultInput}
@@ -910,6 +1142,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                 refreshingBridgeTaskId={refreshingBridgeTaskId}
                 buildingWithAgent={buildingWithAgent}
                 onInboxChange={setDevTaskInput}
+                onGeneratePlanFromSpec={createPlanAndTasksFromSpec}
                 onCreateTask={createDevelopmentTask}
                 onSelectTask={(task) => {
                   setSelectedDevTaskId(task.id);
@@ -1140,7 +1373,6 @@ function ArchivedThinkOperatingTab({
     </div>
   );
 }
-
 function ThinkSessionReview({
   session,
   productWindow,
@@ -1399,6 +1631,258 @@ function BuildOperatingTab({
   return <>{tasksContent}</>;
 }
 
+function ServiceOverviewTab({
+  service,
+  agents,
+  specs,
+  plans,
+  tasks,
+  runIssues,
+  serviceWindow,
+  onGenerateServiceBlueprint,
+  onGenerateServiceWindow,
+  onCopyCodexPrompt,
+  copied,
+}: {
+  service: BrainpressService;
+  agents: ServiceAgent[];
+  specs: BrainpressSpec[];
+  plans: BrainpressPlan[];
+  tasks: DevelopmentTask[];
+  runIssues: RunIssue[];
+  serviceWindow?: ServiceWindow;
+  onGenerateServiceBlueprint: () => void;
+  onGenerateServiceWindow: () => void;
+  onCopyCodexPrompt: () => void;
+  copied: boolean;
+}) {
+  const latestSpec = specs[0];
+  const openQuestionsCount = specs.reduce((count, spec) => count + spec.openQuestions.length, 0);
+  const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
+  const subAgentCount = Math.max(agents.length - (mainAgent ? 1 : 0), 0);
+  const hasBlueprint = Boolean(service.serviceWorkflow.length && service.successMetrics.length && agents.length > 1);
+  const hasServiceWindow = serviceWindow?.status === "generated" && serviceWindow.screens.length > 0;
+  const nextAction = !hasBlueprint
+    ? "Generate the Service Blueprint so Brainpress can define the promise, agent team, workflow, approvals, and success metrics."
+    : openQuestionsCount
+      ? `Answer ${openQuestionsCount} open question${openQuestionsCount === 1 ? "" : "s"} before deeper Build work.`
+      : !hasServiceWindow
+        ? "Generate UI/UX so ServiceWindow shows what users will actually interact with."
+        : latestSpec
+          ? "Export a Codex Build Prompt or generate ordered Build tasks from the Service Spec."
+          : "Start in Think to refine the Service Spec and next Build direction.";
+  return (
+    <section className="rounded-lg border border-slate-800 bg-[#05070d] p-5 text-white shadow-2xl">
+      <CanvasSurfaceBackdrop />
+      <div className="relative z-10 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-lg border border-white/10 bg-white/[0.045] p-6">
+          <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Service Overview</p>
+          <h2 className="mt-3 text-3xl font-semibold tracking-normal">Create and operate this agent-based Service.</h2>
+          <p className="mt-4 text-sm leading-6 text-slate-400">{service.description}</p>
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
+            <ServiceMetric title="Service Promise" value={service.servicePromise} />
+            <ServiceMetric title="Target Customer" value={service.targetCustomer} />
+            <ServiceMetric title="Desired Outcome" value={service.desiredOutcome} />
+            <ServiceMetric title="Main Agent" value={mainAgent?.name || "Main agent not configured yet"} />
+            <ServiceMetric title="Sub-agents" value={`${subAgentCount} supporting agent${subAgentCount === 1 ? "" : "s"}`} />
+            <ServiceMetric title="ServiceWindow" value={hasServiceWindow ? "generated" : "empty"} />
+          </div>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Button variant="primary" onClick={onGenerateServiceBlueprint}>
+              <Wand2 className="h-4 w-4" />
+              Generate Service Blueprint
+            </Button>
+            <Button onClick={onGenerateServiceWindow}>
+              <Sparkles className="h-4 w-4" />
+              Generate UI/UX
+            </Button>
+            <Button onClick={onCopyCodexPrompt} disabled={!hasServiceWindow}>
+              <Clipboard className="h-4 w-4" />
+              {copied ? "Copied" : "Export Codex Build Prompt"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-4">
+          <div className="rounded-lg border border-white/10 bg-white/[0.045] p-5">
+            <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Think / Build / Run Status</p>
+            <div className="mt-4 grid gap-3">
+              <ServiceMetric title="Spec" value={latestSpec ? latestSpec.clarificationStatus.replace("_", " ") : "No Service Spec yet"} />
+              <ServiceMetric title="Current Stage" value={service.currentStage.replace("_", " ")} />
+              <ServiceMetric title="Build Plans" value={`${plans.length} technical plan${plans.length === 1 ? "" : "s"}`} />
+              <ServiceMetric title="Build Tasks" value={`${tasks.length} Codex-ready task${tasks.length === 1 ? "" : "s"}`} />
+              <ServiceMetric title="Run Reviews" value={`${runIssues.length} service operation review${runIssues.length === 1 ? "" : "s"}`} />
+            </div>
+          </div>
+          <div className="rounded-lg border border-amber-300/20 bg-amber-300/10 p-5">
+            <p className="font-mono text-xs font-semibold uppercase tracking-wide text-amber-100">Next recommended action</p>
+            <p className="mt-2 text-sm leading-6 text-amber-50">
+              {nextAction}
+            </p>
+          </div>
+          <SummaryList title="Service Workflow" items={service.serviceWorkflow.slice(0, 5)} />
+          <SummaryList title="Success Metrics" items={service.successMetrics.slice(0, 5)} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AgentTeamTab({ service, agents }: { service: BrainpressService; agents: ServiceAgent[] }) {
+  const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
+  const subAgents = agents.filter((agent) => agent.id !== mainAgent?.id);
+  return (
+    <section className="rounded-lg border border-slate-800 bg-[#05070d] p-5 text-white shadow-2xl">
+      <div className="mb-5">
+        <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Agent Team</p>
+        <h2 className="mt-2 text-3xl font-semibold tracking-normal">Agents that operate this Service.</h2>
+        <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+          Agents are structured definitions for now. Codex is the first execution provider; autonomous execution comes later.
+        </p>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        {mainAgent ? <ServiceAgentCard agent={mainAgent} title="Main Agent" prominent /> : null}
+        <div className="grid gap-4">
+          {subAgents.length ? subAgents.map((agent) => <ServiceAgentCard key={agent.id} agent={agent} title="Sub-agent" />) : (
+            <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-5 text-sm leading-6 text-slate-400">
+              No sub-agents yet. Think can propose sub-agents as the service workflow becomes clearer.
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ServiceWindowTab({
+  service,
+  agents,
+  serviceWindow,
+  onGenerate,
+  onCopyCodexPrompt,
+  copied,
+}: {
+  service: BrainpressService;
+  agents: ServiceAgent[];
+  serviceWindow?: ServiceWindow;
+  onGenerate: () => void;
+  onCopyCodexPrompt: () => void;
+  copied: boolean;
+}) {
+  const isGenerated = serviceWindow?.status === "generated" && serviceWindow.screens.length > 0;
+  return (
+    <section className="overflow-hidden rounded-lg border border-slate-800 bg-[#05070d] text-white shadow-2xl">
+      <div className="border-b border-white/10 bg-white/[0.035] p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">ServiceWindow</p>
+            <h2 className="mt-2 text-3xl font-semibold tracking-normal">Generated UI/UX for the agent service.</h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+              ServiceWindow shows the front office customers or founders use to interact with this agent-based Service.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onGenerate}>
+              <Sparkles className="h-4 w-4" />
+              Generate UI/UX
+            </Button>
+            <Button variant="primary" onClick={onCopyCodexPrompt} disabled={!isGenerated}>
+              <Clipboard className="h-4 w-4" />
+              {copied ? "Copied" : "Export Codex Build Prompt"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {!isGenerated ? (
+        <div className="p-8">
+          <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-8 text-center">
+            <p className="text-xl font-semibold text-white">No service UI generated yet.</p>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-400">
+              Generate the first interface for this agent service based on the current Service Spec, Agent Team, and Build Plan.
+            </p>
+            <Button className="mt-5" variant="primary" onClick={onGenerate}>
+              <Sparkles className="h-4 w-4" />
+              Generate UI/UX
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-5 p-5 xl:grid-cols-[1.1fr_0.9fr]">
+          <div className="overflow-hidden rounded-lg border border-cyan-300/20 bg-[#101827] shadow-2xl shadow-cyan-950/20">
+            <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.04] px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="flex gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-rose-300" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
+                </div>
+                <span className="font-mono text-xs text-slate-400">/{service.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}</span>
+              </div>
+              <TaskChip>Service UI</TaskChip>
+            </div>
+            <div className="bg-[#f8fafc] p-5 text-slate-950">
+              <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">{service.targetCustomer}</p>
+              <h3 className="mt-3 text-3xl font-semibold tracking-normal">{service.name}</h3>
+              <p className="mt-3 text-sm leading-6 text-slate-600">{service.servicePromise}</p>
+              <div className="mt-6 grid gap-3 md:grid-cols-3">
+                {serviceWindow.screens.map((screen, index) => (
+                  <div key={`service-window-screen-${index}-${screen.id}`} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="mb-3 h-1.5 w-12 rounded-full bg-blue-600" />
+                    <p className="font-semibold">{screen.name}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{screen.purpose}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4">
+            <SummaryList title="Primary Flow" items={serviceWindow.primaryFlow} />
+            <SummaryList title="Agent Interaction Points" items={serviceWindow.agentInteractionPoints} />
+            <SummaryList title="Human Approval Points" items={serviceWindow.humanApprovalPoints} />
+            <SummaryList title="Agent Team" items={agents.map((agent) => `${agent.name}: ${agent.role}`)} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ServiceMetric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-slate-950/60 p-4">
+      <p className="font-mono text-[11px] uppercase tracking-wide text-slate-500">{title}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-200">{value}</p>
+    </div>
+  );
+}
+
+function ServiceAgentCard({ agent, title, prominent = false }: { agent: ServiceAgent; title: string; prominent?: boolean }) {
+  return (
+    <div className={cx("rounded-lg border p-5 shadow-2xl", prominent ? "border-blue-300/25 bg-blue-400/10" : "border-white/10 bg-white/[0.045]")}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">{title}</p>
+          <h3 className="mt-2 text-xl font-semibold text-white">{agent.name}</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-400">{agent.goal}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <TaskChip>{agent.permissionLevel}</TaskChip>
+          <TaskChip>{agent.status}</TaskChip>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <SummaryList title="Inputs" items={agent.inputs} />
+        <SummaryList title="Outputs" items={agent.outputs} />
+        <SummaryList title="Tools" items={agent.tools} />
+        <SummaryList title="Escalation" items={agent.escalationRules} />
+      </div>
+      <p className="mt-4 text-sm leading-6 text-slate-400">Success metric: {agent.successMetric}</p>
+    </div>
+  );
+}
+
 function RunOperatingTab({
   input,
   issues,
@@ -1432,7 +1916,7 @@ function RunOperatingTab({
             <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Brainpress</p>
             <h2 className="mt-1 text-xl font-semibold text-white">AI Operations Agent</h2>
             <p className="mt-3 text-sm leading-6 text-slate-400">
-              Tell Brainpress what happened in production. It will sort infrastructure, QA, release, and feedback work into safe next steps.
+              Tell Brainpress what happened in the Service. It will sort infrastructure, QA, release, and feedback work into safe next steps.
             </p>
           </div>
 
@@ -1442,7 +1926,7 @@ function RunOperatingTab({
               className="mt-3 min-h-36 border-white/10 bg-white/[0.05] text-sm text-white placeholder:text-slate-500 focus:border-blue-300/60 focus:ring-blue-400/10"
               value={input}
               onChange={(event) => onInputChange(event.target.value)}
-              placeholder="Describe an infrastructure issue, deployment failure, Supabase problem, Vercel error, QA note, user feedback, or production bug..."
+              placeholder="Describe an infrastructure issue, deployment failure, Supabase problem, Vercel error, QA note, user feedback, or service bug..."
             />
             <Button className="mt-3" variant="primary" onClick={onReview} disabled={runningWithAgent || !input.trim()}>
               <ShieldCheck className="h-4 w-4" />
@@ -1496,9 +1980,9 @@ function RunOperatingTab({
           <div className="relative z-10 mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Run Canvas</p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-normal text-white md:text-4xl">Run the product after agents build it.</h2>
+              <h2 className="mt-2 text-3xl font-semibold tracking-normal text-white md:text-4xl">Run the Service after agents build it.</h2>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-                Use Brainpress to set up infrastructure, verify critical flows, debug deployments, review feedback, and turn real product issues back into Build tasks.
+                Use Brainpress to verify service flows, debug infrastructure, review feedback, and turn real service issues back into Build tasks.
               </p>
             </div>
             <div className="rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-sm text-amber-100">
@@ -1510,7 +1994,7 @@ function RunOperatingTab({
           <div className="relative z-10 grid gap-4 xl:grid-cols-4">
             <RunAgentCard
               title="Infrastructure Agent"
-              description="Set up and debug the services your product depends on."
+              description="Set up and debug the infrastructure this Service depends on."
               handles={[
                 "Supabase setup",
                 "database tables and migrations",
@@ -1543,7 +2027,7 @@ function RunOperatingTab({
             />
             <RunAgentCard
               title="Feedback / Issue Agent"
-              description="Turn user feedback and product issues into clear Build tasks."
+              description="Turn user feedback and service issues into clear Build tasks."
               handles={["bug reports", "user feedback", "failed flows", "support notes", "feature requests from users"]}
               actions={["Analyze Feedback", "Create Build Task"]}
               onAction={onQuickAction}
@@ -1557,7 +2041,7 @@ function RunOperatingTab({
               <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-8 text-center">
                 <p className="text-lg font-semibold text-white">Review with the Run Agent</p>
                 <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-400">
-                  Brainpress will turn product operations problems into likely causes, steps, risks, and Build tasks.
+                  Brainpress will turn service operations problems into likely causes, steps, risks, and Build tasks.
                 </p>
               </div>
             )}
@@ -1713,6 +2197,9 @@ function DevelopmentTasksTab({
   project,
   tasks,
   taskResults,
+  specs,
+  plans,
+  taskLists,
   inboxValue,
   selectedTaskId,
   resultInput,
@@ -1726,6 +2213,7 @@ function DevelopmentTasksTab({
   refreshingBridgeTaskId,
   buildingWithAgent,
   onInboxChange,
+  onGeneratePlanFromSpec,
   onCreateTask,
   onSelectTask,
   onUpdateTask,
@@ -1744,6 +2232,9 @@ function DevelopmentTasksTab({
   project: Project;
   tasks: DevelopmentTask[];
   taskResults: DevelopmentTaskResult[];
+  specs: BrainpressSpec[];
+  plans: BrainpressPlan[];
+  taskLists: BrainpressTaskList[];
   inboxValue: string;
   selectedTaskId: string;
   resultInput: string;
@@ -1757,6 +2248,7 @@ function DevelopmentTasksTab({
   refreshingBridgeTaskId: string | null;
   buildingWithAgent: boolean;
   onInboxChange: (value: string) => void;
+  onGeneratePlanFromSpec: (spec: BrainpressSpec) => void;
   onCreateTask: () => void;
   onSelectTask: (task: DevelopmentTask) => void;
   onUpdateTask: (taskId: string, patch: Partial<DevelopmentTask>) => void;
@@ -1785,7 +2277,7 @@ function DevelopmentTasksTab({
             <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Brainpress</p>
             <h2 className="mt-1 text-xl font-semibold text-white">AI Build Agent</h2>
             <p className="mt-3 text-sm leading-6 text-slate-400">
-              Turn approved product direction into agent-executable work with Codex goals, validation checks, and review gates.
+              Turn approved Service direction into agent-executable work with Codex goals, validation checks, and review gates.
             </p>
           </div>
 
@@ -1839,7 +2331,7 @@ function DevelopmentTasksTab({
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-5 text-sm leading-6 text-slate-400">
-                No development tasks yet. Create the first build task from founder intent or approved product direction.
+                No development tasks yet. Create the first Build task from founder intent or approved Service direction.
               </div>
             )}
           </div>
@@ -1860,6 +2352,13 @@ function DevelopmentTasksTab({
               <p className="mt-1 text-xs leading-5 text-emerald-200/80">Dispatch, merge, deploy, and verified status require a person.</p>
             </div>
           </div>
+
+          <SpecLoopBuildPanel
+            specs={specs}
+            plans={plans}
+            taskLists={taskLists}
+            onGeneratePlanFromSpec={onGeneratePlanFromSpec}
+          />
 
           {selectedTask ? (
             <DevelopmentTaskDetail
@@ -1899,6 +2398,62 @@ function DevelopmentTasksTab({
         </div>
       </div>
     </section>
+  );
+}
+
+function SpecLoopBuildPanel({
+  specs,
+  plans,
+  taskLists,
+  onGeneratePlanFromSpec,
+}: {
+  specs: BrainpressSpec[];
+  plans: BrainpressPlan[];
+  taskLists: BrainpressTaskList[];
+  onGeneratePlanFromSpec: (spec: BrainpressSpec) => void;
+}) {
+  const latestSpec = specs[0];
+  const latestPlan = latestSpec ? plans.find((plan) => plan.specId === latestSpec.id) : undefined;
+  const latestTaskList = latestPlan ? taskLists.find((taskList) => taskList.planId === latestPlan.id) : undefined;
+
+  return (
+    <div className="mb-5 rounded-lg border border-violet-300/20 bg-violet-300/[0.07] p-4 shadow-2xl shadow-violet-950/10">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="font-mono text-xs font-semibold uppercase tracking-wide text-violet-200">Spec Loop</p>
+          <h3 className="mt-1 text-lg font-semibold text-white">
+            {latestSpec ? latestSpec.title : "Create a Service Spec in Think first"}
+          </h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            {latestSpec
+              ? "Brainpress plans the technical path and ordered agent tasks from the founder-facing Service Spec before implementation."
+              : "Think creates the Service Spec. Build turns it into a technical plan, ordered tasks, Codex goals, and dispatch-ready DevelopmentTasks."}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {latestSpec ? <TaskChip>{latestSpec.clarificationStatus.replace("_", " ")}</TaskChip> : null}
+          {latestPlan ? <TaskChip>plan ready</TaskChip> : null}
+          {latestTaskList ? <TaskChip>{latestTaskList.tasks.length} ordered tasks</TaskChip> : null}
+        </div>
+      </div>
+
+      {latestSpec ? (
+        <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_auto]">
+          <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
+            <p className="font-mono text-[11px] uppercase text-violet-200">What</p>
+            <p className="mt-1 text-sm leading-6 text-slate-300">{latestSpec.what}</p>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
+            <p className="font-mono text-[11px] uppercase text-violet-200">Why</p>
+            <p className="mt-1 text-sm leading-6 text-slate-300">{latestSpec.why}</p>
+          </div>
+          <Button className="self-stretch" variant="primary" onClick={() => onGeneratePlanFromSpec(latestSpec)}>
+            <Wand2 className="h-4 w-4" />
+            Generate Plan + Tasks
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2185,7 +2740,7 @@ function DevelopmentTaskDetail({
           <div>
             <p className="text-sm font-semibold text-white">Codex Goal Function</p>
             <p className="mt-1 text-sm leading-6 text-slate-400">
-              Durable `/goal` objective generated from the task, project memory, saved sources, validation loop, permission-safe guidance, and final summary contract.
+              Durable `/goal` objective generated from the task, Service context, saved sources, validation loop, permission-safe guidance, and final summary contract.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

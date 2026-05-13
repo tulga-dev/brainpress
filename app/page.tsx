@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { ServicesDashboard } from "@/components/brainpress/services-dashboard";
 
 export default function HomePage() {
-  redirect("/projects/brainpress-core");
+  return <ServicesDashboard />;
 }

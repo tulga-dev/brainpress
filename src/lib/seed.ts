@@ -1,4 +1,5 @@
 import { generateAgentPrompt, generateOutcomePlan } from "@/lib/brainpress";
+import { createDefaultServiceAgents, createEmptyServiceWindow, createServiceFromProject } from "@/lib/services";
 import { defaultPermissionSafetyRules } from "@/lib/safety";
 import type { AgentPrompt, BrainpressState, Memory, Outcome, Project } from "@/lib/types";
 
@@ -148,7 +149,15 @@ export const seedPrompt: AgentPrompt = {
   createdAt,
 };
 
+export const brainpressCoreService = createServiceFromProject(brainpressCoreProject, createdAt);
+export const seedService = createServiceFromProject(seedProject, createdAt);
+export const brainpressCoreServiceAgents = createDefaultServiceAgents(brainpressCoreService, createdAt);
+export const seedServiceAgents = createDefaultServiceAgents(seedService, createdAt);
+
 export const initialState: BrainpressState = {
+  services: [brainpressCoreService, seedService],
+  serviceAgents: [...brainpressCoreServiceAgents, ...seedServiceAgents],
+  serviceWindows: [createEmptyServiceWindow(brainpressCoreService.id, createdAt), createEmptyServiceWindow(seedService.id, createdAt)],
   projects: [brainpressCoreProject, seedProject],
   memories: {
     [brainpressCoreProject.id]: brainpressCoreMemory,
@@ -158,6 +167,11 @@ export const initialState: BrainpressState = {
   prompts: [seedPrompt],
   thinkSessions: [],
   productWindows: [],
+  constitutions: [],
+  specs: [],
+  clarifyingQuestions: [],
+  plans: [],
+  taskLists: [],
   developmentTasks: [],
   developmentTaskResults: [],
   runIssues: [],
