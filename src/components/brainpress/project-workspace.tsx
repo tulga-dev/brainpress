@@ -271,6 +271,41 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         project: activeProject,
         mode: thinkMode,
         artifactType: thinkArtifactType,
+        taskContext: {
+          service: {
+            name: activeService.name,
+            description: activeService.description,
+            servicePromise: activeService.servicePromise,
+            targetCustomer: activeService.targetCustomer,
+            desiredOutcome: activeService.desiredOutcome,
+            currentStage: activeService.currentStage,
+            serviceWorkflow: activeService.serviceWorkflow,
+            humanApprovalPoints: activeService.humanApprovalPoints,
+            successMetrics: activeService.successMetrics,
+            openQuestions: activeService.openQuestions,
+          },
+          agentTeam: serviceAgents.map((agent) => ({
+            name: agent.name,
+            role: agent.role,
+            goal: agent.goal,
+            permissionLevel: agent.permissionLevel,
+            status: agent.status,
+          })),
+          latestSpec: specs[0]
+            ? {
+                what: specs[0].what,
+                why: specs[0].why,
+                clarificationStatus: specs[0].clarificationStatus,
+                openQuestions: specs[0].openQuestions,
+              }
+            : null,
+          existingCanvases: thinkingArtifacts.slice(0, 8).map((artifact) => ({
+            type: artifact.type,
+            title: artifact.title,
+            purpose: artifact.purpose,
+            status: artifact.status,
+          })),
+        },
       });
       const localSession = createThinkSession({
         input,

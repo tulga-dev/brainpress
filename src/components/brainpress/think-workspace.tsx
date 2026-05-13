@@ -218,7 +218,7 @@ function ThinkCofounderSidebar({
     const pendingMessage: ThinkChatMessage = {
       id: createThinkChatMessageId("assistant"),
       role: "assistant",
-      content: "Brainpress is thinking through the service direction...",
+      content: "Brainpress is thinking through the service direction with Live AI when available...",
       pending: true,
       createdAt: new Date().toISOString(),
     };
@@ -477,6 +477,7 @@ function ThinkingArtifactCard({
         </p>
       ) : null}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3 text-xs text-slate-500">
+        <span>{artifact.createdByAgent}</span>
         <span>Confidence {Math.round(artifact.confidence * 100)}%</span>
         <span>{formatDateTime(artifact.updatedAt)}</span>
       </div>
@@ -639,13 +640,25 @@ function sessionHistoryToMessages(sessions: ThinkSession[]): ThinkChatMessage[] 
 
 function assistantResponseFromThinkResult(result: { session: ThinkSession; productWindow?: ProductWindow }) {
   const taskCount = result.session.recommendedBuildTasks.length;
+  const isLive = result.session.agentSource === "openai";
+  const sourceLine = isLive
+    ? "Live AI response:"
+    : `Local fallback response${result.session.agentError ? ` (${result.session.agentError})` : ""}:`;
   const pieces = [
-    `I shaped this into a service direction: ${result.session.summary}`,
-    `I also updated the Dynamic Canvas with the artifacts this idea needs right now.`,
+    `${sourceLine} ${result.session.summary}`,
+    result.session.productDirection ? `Service direction: ${result.session.productDirection}` : "",
+    result.session.targetUser || result.session.userProblem
+      ? `Who and why: ${[result.session.targetUser, result.session.userProblem].filter(Boolean).join(" - ")}`
+      : "",
+    result.session.proposedSolution ? `Suggested solution: ${result.session.proposedSolution}` : "",
+    result.session.openQuestions.length
+      ? `Questions I would clarify next: ${result.session.openQuestions.slice(0, 3).join(" ")}`
+      : "",
     taskCount
-      ? `I found ${taskCount} possible Next Build ${taskCount === 1 ? "step" : "steps"}. You can create ${taskCount === 1 ? "it" : "them"} from the canvas.`
+      ? `Possible Next Build ${taskCount === 1 ? "step" : "steps"}: ${result.session.recommendedBuildTasks.slice(0, 2).map((task) => task.title).join("; ")}.`
       : "I did not find a Build task yet. Add more detail and I will turn it into agent-ready work.",
-    result.productWindow ? "I also prepared ServiceWindow data. Open the ServiceWindow tab when you want to generate or review UI/UX." : "",
+    "I also updated the Dynamic Canvas with the artifacts this idea needs right now.",
+    result.productWindow ? "ServiceWindow data is ready for the Design Agent when you want UI/UX." : "",
   ].filter(Boolean);
   return pieces.join("\n\n");
 }

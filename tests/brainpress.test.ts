@@ -3008,7 +3008,10 @@ test("Service workspace exposes Service Overview, Agent Team, ServiceWindow, Thi
   assert.match(thinkSource, /Ask Brainpress about your service idea/);
   assert.match(thinkSource, /ThinkChatMessage/);
   assert.match(thinkSource, /Brainpress is thinking through the service direction/);
-  assert.match(thinkSource, /I shaped this into a service direction/);
+  assert.match(thinkSource, /Live AI response/);
+  assert.match(thinkSource, /Service direction:/);
+  assert.match(thinkSource, /Suggested solution:/);
+  assert.match(thinkSource, /Questions I would clarify next/);
   assert.match(thinkSource, /I also updated the Dynamic Canvas with the artifacts this idea needs right now/);
   assert.match(thinkSource, /I couldn't complete that Think session/);
   assert.match(thinkSource, /Clarify idea/);
