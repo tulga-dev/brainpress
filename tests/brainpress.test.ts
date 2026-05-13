@@ -47,6 +47,28 @@ import {
   inferProductWindowPreviewType,
 } from "../src/lib/product-window";
 import {
+  createClarifyingQuestions,
+  createConstitution,
+  createDevelopmentTasksFromSpecTasks,
+  createPlanFromSpec,
+  createSpecFromThinkSession,
+  createTaskListFromPlan,
+  normalizeSpec,
+} from "../src/lib/spec-loop";
+import {
+  createDefaultServiceAgents,
+  createEmptyServiceWindow,
+  createProjectFromServiceInput,
+  createServiceFromInput,
+  createServiceFromProject,
+  createServiceWindowCodexPrompt,
+  generateServiceBlueprint,
+  generateServiceWindow,
+  normalizeService,
+  normalizeServiceAgent,
+  normalizeServiceWindow,
+} from "../src/lib/services";
+import {
   applyGithubDispatchResult,
   createGithubIssueBody,
   createGithubIssueTitle,
@@ -273,6 +295,166 @@ test("Brainpress Core project is available for internal development tasks", () =
   assert.match(brainpressCoreMemory.productSummary, /development task orchestrator/i);
 });
 
+test("Brainpress Service wraps a legacy project with service-first fields", () => {
+  const service = createServiceFromProject(brainpressCoreProject, "2026-05-13T00:00:00.000Z");
+
+  assert.equal(service.id, brainpressCoreProject.id);
+  assert.equal(service.name, "Brainpress Agent Service");
+  assert.match(service.servicePromise, /founder intent|Codex/i);
+  assert.match(service.targetCustomer, /founder|builder/i);
+  assert.match(service.desiredOutcome, /founder intent|Codex/i);
+  assert.equal(service.currentStage, "build_ready");
+  assert.equal(service.agentIds.includes(service.mainAgentId || ""), true);
+  assert.ok(service.serviceWorkflow.length > 0);
+  assert.ok(service.humanApprovalPoints.length > 0);
+  assert.ok(service.successMetrics.length > 0);
+});
+
+test("Create Service flow prepares compatibility project, service, and agent team", () => {
+  const project = createProjectFromServiceInput({
+    serviceName: "Dental Lead Generation Service",
+    targetCustomer: "Dental clinics",
+    outcome: "Find and qualify new patient leads with agent follow-up.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const service = createServiceFromInput({
+    project,
+    serviceName: "Dental Lead Generation Service",
+    targetCustomer: "Dental clinics",
+    outcome: "Find and qualify new patient leads with agent follow-up.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
+
+  assert.equal(project.id, service.id);
+  assert.equal(project.name, "Dental Lead Generation Service");
+  assert.equal(service.servicePromise, "Find and qualify new patient leads with agent follow-up.");
+  assert.equal(service.targetCustomer, "Dental clinics");
+  assert.equal(agents.length >= 2, true);
+  assert.equal(agents[0].serviceId, service.id);
+  assert.equal(agents[0].permissionLevel, "founder_approval_required");
+  assert.equal(agents[0].status, "active");
+  assert.equal(agents.slice(1).every((agent) => agent.status === "proposed"), true);
+});
+
+test("Service Blueprint generation refines service promise, agent team, workflow, and open questions", () => {
+  const baseService = createServiceFromProject(brainpressCoreProject, "2026-05-13T00:00:00.000Z");
+  const session = createThinkSession({
+    input: "Create a service that helps founders approve Codex work safely before it touches production.",
+    mode: "clarify_idea",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-13T00:01:00.000Z",
+  });
+  const spec = createSpecFromThinkSession({
+    session,
+    project: brainpressCoreProject,
+    now: "2026-05-13T00:02:00.000Z",
+  });
+  const blueprint = generateServiceBlueprint({
+    service: { ...baseService, mainAgentId: "", agentIds: [], serviceWorkflow: [], humanApprovalPoints: [], successMetrics: [] },
+    agents: [],
+    spec,
+    memory: brainpressCoreMemory,
+    now: "2026-05-13T00:03:00.000Z",
+  });
+
+  assert.match(blueprint.service.servicePromise, /service that helps founders approve Codex work safely/i);
+  assert.ok(blueprint.service.mainAgentId.length > 0);
+  assert.ok(blueprint.service.agentIds.length >= 3);
+  assert.ok(blueprint.service.serviceWorkflow.some((item) => /Codex/i.test(item)));
+  assert.ok(blueprint.service.humanApprovalPoints.some((item) => /Codex dispatch/i.test(item)));
+  assert.ok(blueprint.service.successMetrics.length > 0);
+  assert.ok(blueprint.service.openQuestions.length > 0);
+  assert.equal(blueprint.agents[0].permissionLevel, "founder_approval_required");
+  assert.ok(blueprint.agents.some((agent) => /Codex Build Agent/i.test(agent.name)));
+  assert.ok(blueprint.agents.some((agent) => /QA & Verification Agent/i.test(agent.name)));
+});
+
+test("ServiceWindow starts empty, generates service UI/UX, and exports a Codex prompt", () => {
+  const service = createServiceFromProject(brainpressCoreProject, "2026-05-13T00:00:00.000Z");
+  const emptyWindow = createEmptyServiceWindow(service.id, "2026-05-13T00:00:00.000Z");
+  const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
+  const session = createThinkSession({
+    input: "Design an agent-native service where founders approve Codex build work.",
+    mode: "clarify_idea",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-13T00:01:00.000Z",
+  });
+  const spec = createSpecFromThinkSession({
+    session,
+    project: brainpressCoreProject,
+    now: "2026-05-13T00:02:00.000Z",
+  });
+  const plan = createPlanFromSpec({
+    spec,
+    project: brainpressCoreProject,
+    now: "2026-05-13T00:03:00.000Z",
+  });
+  const blueprint = generateServiceBlueprint({ service, agents, spec, memory: brainpressCoreMemory });
+  const generatedWindow = generateServiceWindow({
+    service: blueprint.service,
+    agents: blueprint.agents,
+    spec,
+    plan,
+    now: "2026-05-13T00:04:00.000Z",
+  });
+  const taskList = createTaskListFromPlan(plan, "2026-05-13T00:04:30.000Z");
+  const developmentTasks = createDevelopmentTasksFromSpecTasks({
+    taskList,
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    spec,
+    plan,
+    now: "2026-05-13T00:04:45.000Z",
+  });
+  const prompt = createServiceWindowCodexPrompt({
+    service: blueprint.service,
+    agents: blueprint.agents,
+    serviceWindow: generatedWindow,
+    spec,
+    plan,
+    taskLists: [taskList],
+    developmentTasks,
+    memory: brainpressCoreMemory,
+  });
+
+  assert.equal(emptyWindow.status, "empty");
+  assert.equal(emptyWindow.screens.length, 0);
+  assert.equal(generatedWindow.status, "generated");
+  assert.equal(generatedWindow.serviceId, service.id);
+  assert.ok(generatedWindow.screens.length >= 3);
+  assert.match(generatedWindow.primaryFlow.join("\n"), /Founder/i);
+  assert.match(generatedWindow.agentInteractionPoints.join("\n"), /agent/i);
+  assert.match(generatedWindow.humanApprovalPoints.join("\n"), /Codex dispatch|merge|deploy/i);
+  assert.match(prompt, /Codex Build Prompt/);
+  assert.match(prompt, /Service Promise/);
+  assert.match(prompt, /Agent Team/);
+  assert.match(prompt, /Generated Service UI\/UX/);
+  assert.match(prompt, /Ordered Spec Tasks/);
+  assert.match(prompt, /Existing DevelopmentTasks/);
+  assert.match(prompt, /Preserve existing PDF upload/);
+});
+
+test("Service normalization preserves agents and generated UI for legacy storage", async () => {
+  await withMockLocalStorage(async () => {
+    const state = loadBrainpressState();
+    const service = state.services.find((item) => item.id === brainpressCoreProject.id);
+    const agents = state.serviceAgents.filter((agent) => agent.serviceId === brainpressCoreProject.id);
+    const serviceWindow = state.serviceWindows.find((item) => item.serviceId === brainpressCoreProject.id);
+
+    assert.ok(service);
+    assert.equal(service?.name, "Brainpress Agent Service");
+    assert.equal(agents.length >= 2, true);
+    assert.equal(agents[0].permissionLevel, "founder_approval_required");
+    assert.equal(serviceWindow?.status, "empty");
+    assert.deepEqual(normalizeService({ id: "svc_1", name: "Research Service" }).agentIds, ["agent_svc_1_main"]);
+    assert.equal(normalizeServiceAgent({ id: "agent_1", serviceId: "svc_1", name: "Research Agent" }).status, "proposed");
+    assert.equal(normalizeServiceWindow({ id: "window_1", serviceId: "svc_1" }).status, "empty");
+  });
+});
+
 test("messy multi-PDF bug intent creates a ready DevelopmentTask", () => {
   const task = createDevelopmentTaskFromIntent({
     input: "checked but still cant upload multiple pdfs to memory",
@@ -465,6 +647,86 @@ test("Create Build Task from Product Window creates a linked DevelopmentTask", (
   assert.match(task.acceptanceCriteria.join("\n"), /npm run typecheck passes/i);
   assert.match(task.context.join("\n"), /Concept note: Product Window is a thinking artifact/i);
   assert.match(task.codexGoal, /^\/goal Continue building Brainpress Core\./);
+});
+
+test("Spec Loop turns ThinkSession and ProductWindow into spec, clarify, plan, tasks, and linked DevelopmentTasks", () => {
+  const session = createThinkSession({
+    input: "I want Brainpress to help founders approve product direction before agents build anything. It should show a preview, ask questions when unclear, and create safe Build tasks.",
+    mode: "clarify_idea",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const productWindow = createProductWindowFromThinkSession({
+    session,
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:01:00.000Z",
+  });
+  const constitution = createConstitution(brainpressCoreProject, "2026-05-12T00:02:00.000Z");
+  const spec = createSpecFromThinkSession({
+    session,
+    productWindow,
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:03:00.000Z",
+  });
+  const questions = createClarifyingQuestions(spec, "2026-05-12T00:04:00.000Z");
+  const plan = createPlanFromSpec({
+    spec,
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:05:00.000Z",
+  });
+  const taskList = createTaskListFromPlan(plan, "2026-05-12T00:06:00.000Z");
+  const tasks = createDevelopmentTasksFromSpecTasks({
+    taskList,
+    project: brainpressCoreProject,
+    memory: brainpressCoreMemory,
+    spec,
+    plan,
+    now: "2026-05-12T00:07:00.000Z",
+  });
+
+  assert.equal(constitution.projectId, brainpressCoreProject.id);
+  assert.match(constitution.approvalRules.join("\n"), /Founder approval is required/i);
+  assert.equal(spec.thinkSessionId, session.id);
+  assert.equal(spec.productWindowId, productWindow.id);
+  assert.equal(spec.serviceId, brainpressCoreProject.id);
+  assert.match(spec.what, /Brainpress|founders|approve/i);
+  assert.ok(spec.userStories.length > 0);
+  assert.ok(spec.successCriteria.length > 0);
+  assert.ok(spec.nonGoals.length > 0);
+  assert.ok(spec.assumptions.length > 0);
+  assert.ok(questions.length > 0);
+  assert.equal(plan.specId, spec.id);
+  assert.equal(plan.serviceId, brainpressCoreProject.id);
+  assert.match(plan.validationPlan.join("\n"), /npm run build|Product Window/i);
+  assert.equal(taskList.planId, plan.id);
+  assert.equal(taskList.serviceId, brainpressCoreProject.id);
+  assert.ok(taskList.dependencyOrder.length >= 3);
+  assert.equal(tasks.length, taskList.tasks.length);
+  assert.equal(tasks[0].sourceSpecId, spec.id);
+  assert.equal(tasks[0].sourcePlanId, plan.id);
+  assert.equal(tasks[0].sourceSpecTaskId, taskList.tasks[0].id);
+  assert.equal(tasks[0].serviceId, brainpressCoreProject.id);
+  assert.equal(tasks[0].status, "ready_to_dispatch");
+  assert.match(tasks[0].codexGoal, /^\/goal Continue building Brainpress Core\./);
+});
+
+test("Spec Loop marks ambiguous ideas as needing clarification", () => {
+  const session = createThinkSession({
+    input: "Maybe improve onboarding?",
+    mode: "open_thinking",
+    artifactType: "product_brief",
+    project: brainpressCoreProject,
+    now: "2026-05-12T00:00:00.000Z",
+  });
+  const spec = createSpecFromThinkSession({ session, project: brainpressCoreProject });
+  const questions = createClarifyingQuestions(spec);
+  const normalized = normalizeSpec({ id: "legacy_spec", projectId: brainpressCoreProject.id });
+
+  assert.equal(spec.clarificationStatus, "needs_clarification");
+  assert.ok(questions.length >= 2);
+  assert.ok(questions.every((question) => question.question.endsWith("?")));
+  assert.equal(normalized.clarificationStatus, "needs_clarification");
 });
 
 test("GitHub Dispatch creates issue title and body from DevelopmentTask", () => {
@@ -2555,28 +2817,35 @@ test("Memory UI does not repeat stale filler copy in cards", () => {
   assert.doesNotMatch(componentSource, /No strong signal detected/);
 });
 
-test("Think Build Run workspace exposes Think as the first founder experience", () => {
+test("Service workspace exposes Service Overview, Agent Team, ServiceWindow, Think, Build, and Run", () => {
   const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
   const thinkSource = readFileSync("src/components/brainpress/think-workspace.tsx", "utf8");
   const homeSource = readFileSync("app/page.tsx", "utf8");
   const buildSection = sourceBetween(componentSource, "function DevelopmentTasksTab", "function DevelopmentTaskDetail");
   const taskDetailSection = sourceBetween(componentSource, "function DevelopmentTaskDetail", "function DispatchOptionCard");
 
-  assert.match(componentSource, /const tabs = \["Think", "Build", "Run"\] as const/);
-  assert.match(componentSource, /useState<Tab>\("Think"\)/);
+  assert.match(componentSource, /const tabs = \["Overview", "Agent Team", "ServiceWindow", "Think", "Build", "Run"\] as const/);
+  assert.match(componentSource, /useState<Tab>\("Overview"\)/);
+  assert.match(componentSource, /ServiceOverviewTab/);
+  assert.match(componentSource, /AgentTeamTab/);
+  assert.match(componentSource, /ServiceWindowTab/);
+  assert.match(componentSource, /Agent-native Service/);
+  assert.match(componentSource, /Generate UI\/UX/);
+  assert.match(componentSource, /No service UI generated yet/);
+  assert.match(componentSource, /Export Codex Build Prompt/);
   assert.match(thinkSource, /AI Cofounder/);
   assert.match(thinkSource, /MobilePaneSwitch/);
   assert.match(thinkSource, /Chat/);
   assert.match(thinkSource, /Canvas/);
-  assert.match(thinkSource, /Ask Brainpress about your product idea/);
+  assert.match(thinkSource, /Ask Brainpress about your service idea/);
   assert.match(thinkSource, /ThinkChatMessage/);
-  assert.match(thinkSource, /Brainpress is thinking through the product direction/);
-  assert.match(thinkSource, /I shaped this into a product direction/);
-  assert.match(thinkSource, /I also updated the canvas with Vision, Roadmap, Features, Risks, and a Product Window preview/);
+  assert.match(thinkSource, /Brainpress is thinking through the service direction/);
+  assert.match(thinkSource, /I shaped this into a service direction/);
+  assert.match(thinkSource, /I also updated the canvas with Vision, Roadmap, Features, Risks, and a ServiceWindow preview/);
   assert.match(thinkSource, /I couldn't complete that Think session/);
   assert.match(thinkSource, /Think Canvas/);
-  assert.match(thinkSource, /Shape the product before you build it\./);
-  assert.match(thinkSource, /Think with Brainpress to clarify ideas, define the MVP, make product decisions, and turn messy founder thinking into buildable direction\./);
+  assert.match(thinkSource, /Shape the service before Codex builds it\./);
+  assert.match(thinkSource, /define the service promise, agent team, workflow, approvals, and buildable direction/);
   assert.match(thinkSource, /Clarify idea/);
   assert.match(thinkSource, /Define MVP/);
   assert.match(thinkSource, /Create feature spec/);
@@ -2589,10 +2858,13 @@ test("Think Build Run workspace exposes Think as the first founder experience", 
   assert.match(thinkSource, /Roadmap/);
   assert.match(thinkSource, /Features/);
   assert.match(thinkSource, /Design/);
-  assert.match(thinkSource, /Product UI Example Window/);
-  assert.match(thinkSource, /Product Window/);
-  assert.match(thinkSource, /Product UI/);
+  assert.match(thinkSource, /Service UI Example Window/);
+  assert.match(thinkSource, /ServiceWindow/);
+  assert.match(thinkSource, /Service UI/);
   assert.match(thinkSource, /Agent-built preview page/);
+  assert.match(thinkSource, /Spec Loop/);
+  assert.match(thinkSource, /Service Spec/);
+  assert.match(thinkSource, /Needs clarification/);
   assert.match(thinkSource, /Build Next/);
   assert.match(thinkSource, /Create Build Task/);
   assert.match(thinkSource, /Live AI/);
@@ -2602,6 +2874,7 @@ test("Think Build Run workspace exposes Think as the first founder experience", 
   assert.doesNotMatch(thinkSource, /Generated product direction/);
   assert.match(buildSection, /AI Build Agent/);
   assert.match(buildSection, /Task Execution Canvas/);
+  assert.match(buildSection, /Generate Plan \+ Tasks/);
   assert.match(buildSection, /Chat \/ Tasks/);
   assert.match(buildSection, /Canvas \/ Detail/);
   assert.match(buildSection, /Human approval/);
@@ -2613,9 +2886,8 @@ test("Think Build Run workspace exposes Think as the first founder experience", 
   assert.match(taskDetailSection, /Use Codex web\/iOS or GitHub @codex/);
   assert.match(taskDetailSection, /Copy GitHub Issue Body/);
   assert.match(taskDetailSection, /Create GitHub Issue/);
-  assert.match(homeSource, /redirect\("\/projects\/brainpress-core"\)/);
+  assert.match(homeSource, /ServicesDashboard/);
   assert.doesNotMatch(componentSource, /Dev Agent Inbox/);
-  assert.doesNotMatch(componentSource, /const tabs = \["Overview"/);
   assert.doesNotMatch(componentSource, /const tabs = .*"Memory".*"Agent Runs"/);
   assert.doesNotMatch(thinkSource, /Import Project History|Upload PDF|Sources|Workspace settings|Project Roadmap Dashboard/);
   assert.doesNotMatch(buildSection, /Import Project History|Upload PDF|Sources|Founder Memory|Project Roadmap Dashboard/);
@@ -2640,11 +2912,11 @@ test("Brainpress workspace list keys include context and index instead of raw du
   assert.match(agentRunsSource, /verification-command-\$\{selectedRun\.id\}-\$\{index\}/);
 });
 
-test("Run workspace is product operations, not old memory or source intake UI", () => {
+test("Run workspace is service operations, not old memory or source intake UI", () => {
   const componentSource = readFileSync("src/components/brainpress/project-workspace.tsx", "utf8");
   const runSection = sourceBetween(componentSource, "function RunOperatingTab", "function RunAgentCard");
 
-  assert.match(runSection, /Run the product after agents build it\./);
+  assert.match(runSection, /Run the Service after agents build it\./);
   assert.match(runSection, /What do we need to run, verify, or fix\?/);
   assert.match(runSection, /Review with Run Agent/);
   assert.match(runSection, /AI Operations Agent/);

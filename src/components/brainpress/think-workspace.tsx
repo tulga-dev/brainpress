@@ -4,7 +4,9 @@ import { CheckCircle2, CornerDownRight, Plus, Send, Sparkles, Wand2 } from "luci
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThinkAgentResult } from "@/lib/agent-gateway";
 import type {
+  BrainpressSpec,
   BrainpressAgentSource,
+  ClarifyingQuestion,
   ProductWindow,
   RecommendedBuildTask,
   ThinkArtifactType,
@@ -18,6 +20,8 @@ interface ThinkOperatingTabProps {
   directionInput: string;
   sessions: ThinkSession[];
   productWindows: ProductWindow[];
+  specs: BrainpressSpec[];
+  clarifyingQuestions: ClarifyingQuestion[];
   selectedSessionId: string;
   mode: ThinkMode;
   artifactType: ThinkArtifactType;
@@ -70,6 +74,8 @@ export function ThinkOperatingTab({
   directionInput,
   sessions,
   productWindows,
+  specs,
+  clarifyingQuestions,
   selectedSessionId,
   mode,
   artifactType,
@@ -89,6 +95,12 @@ export function ThinkOperatingTab({
   const selectedProductWindow = selectedSession
     ? productWindows.find((window) => window.thinkSessionId === selectedSession.id)
     : undefined;
+  const selectedSpec = selectedSession
+    ? specs.find((spec) => spec.thinkSessionId === selectedSession.id || spec.productWindowId === selectedProductWindow?.id)
+    : specs[0];
+  const selectedClarifyingQuestions = selectedSpec
+    ? clarifyingQuestions.filter((question) => question.specId === selectedSpec.id)
+    : [];
 
   async function createProductDirectionFromChat() {
     return onCreateProductDirection();
@@ -118,6 +130,8 @@ export function ThinkOperatingTab({
           <ThinkCanvas
             selectedSession={selectedSession}
             productWindow={selectedProductWindow}
+            spec={selectedSpec}
+            clarifyingQuestions={selectedClarifyingQuestions}
             onCreateBuildTask={onCreateBuildTask}
             onRegenerateProductWindow={onRegenerateProductWindow}
             onApproveProductWindow={onApproveProductWindow}
@@ -204,7 +218,7 @@ function ThinkCofounderSidebar({
     const pendingMessage: ThinkChatMessage = {
       id: createThinkChatMessageId("assistant"),
       role: "assistant",
-      content: "Brainpress is thinking through the product direction...",
+      content: "Brainpress is thinking through the service direction...",
       pending: true,
       createdAt: new Date().toISOString(),
     };
@@ -214,7 +228,7 @@ function ThinkCofounderSidebar({
       const result = await onCreateProductDirection();
       if (!result) {
         setChatMessages((current) => replaceChatMessage(current, pendingMessage.id, {
-          content: "I need a little more detail before I can shape this into product direction. Try adding the user, problem, or feature you are thinking about.",
+          content: "I need a little more detail before I can shape this into service direction. Try adding the user, problem, or feature you are thinking about.",
           pending: false,
           source: "fallback",
         }));
@@ -311,7 +325,7 @@ function ThinkCofounderSidebar({
           className="min-h-28 border-white/10 bg-white/[0.05] text-sm text-white placeholder:text-slate-500 focus:border-blue-300/60 focus:ring-blue-400/10"
           value={directionInput}
           onChange={(event) => onDirectionInputChange(event.target.value)}
-          placeholder="Ask Brainpress about your product idea..."
+          placeholder="Ask Brainpress about your service idea..."
         />
         <div className="mt-3 flex items-center justify-between gap-3">
           <span className="truncate font-mono text-[11px] uppercase text-slate-500">
@@ -330,6 +344,8 @@ function ThinkCofounderSidebar({
 function ThinkCanvas({
   selectedSession,
   productWindow,
+  spec,
+  clarifyingQuestions,
   onCreateBuildTask,
   onRegenerateProductWindow,
   onApproveProductWindow,
@@ -337,6 +353,8 @@ function ThinkCanvas({
 }: {
   selectedSession?: ThinkSession;
   productWindow?: ProductWindow;
+  spec?: BrainpressSpec;
+  clarifyingQuestions: ClarifyingQuestion[];
   onCreateBuildTask: (session: ThinkSession, recommendation: RecommendedBuildTask) => void;
   onRegenerateProductWindow: (session: ThinkSession) => void;
   onApproveProductWindow: (productWindow: ProductWindow) => void;
@@ -356,10 +374,10 @@ function ThinkCanvas({
         <div>
           <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Think Canvas</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-normal text-white md:text-4xl">
-            Shape the product before you build it.
+            Shape the service before Codex builds it.
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
-            Think with Brainpress to clarify ideas, define the MVP, make product decisions, and turn messy founder thinking into buildable direction.
+            Think with Brainpress to define the service promise, agent team, workflow, approvals, and buildable direction.
           </p>
         </div>
         {selectedSession ? (
@@ -371,7 +389,8 @@ function ThinkCanvas({
       </div>
 
       <div className="relative z-10 grid gap-4 xl:hidden">
-        <ThinkCanvasNode title="Vision" eyebrow="Direction" summary={selectedSession?.productDirection || "Your product direction will land here."} />
+        <ThinkCanvasNode title="Vision" eyebrow="Direction" summary={selectedSession?.productDirection || "Your service direction will land here."} />
+        <SpecStatusNode spec={spec} clarifyingQuestions={clarifyingQuestions} />
         <ProductWindowNode
           session={selectedSession}
           productWindow={productWindow}
@@ -380,7 +399,7 @@ function ThinkCanvas({
           onCreateProductWindowBuildTask={onCreateProductWindowBuildTask}
         />
         <ThinkCanvasNode title="Features" eyebrow="Ideas" summary={features[0]} items={features.slice(0, 4)} />
-        <ThinkCanvasNode title="Design" eyebrow="Feel" summary={productWindow?.uiPrinciples[0] || "UI principles will appear after the Product Window is generated."} items={productWindow?.uiPrinciples.slice(0, 3)} />
+        <ThinkCanvasNode title="Design" eyebrow="Feel" summary={productWindow?.uiPrinciples[0] || "UI principles will appear after the ServiceWindow is generated."} items={productWindow?.uiPrinciples.slice(0, 3)} />
         <ThinkCanvasNode title="Roadmap" eyebrow="MVP" summary={roadmap[0]} items={roadmap.slice(0, 4)} />
         <BuildNextNode session={selectedSession} recommendation={firstRecommendation} onCreateBuildTask={onCreateBuildTask} />
       </div>
@@ -394,8 +413,13 @@ function ThinkCanvas({
           className="absolute left-[34%] top-0 w-[34%]"
           title="Vision"
           eyebrow="Direction"
-          summary={selectedSession?.productDirection || "Your product direction will land here."}
+          summary={selectedSession?.productDirection || "Your service direction will land here."}
           dormant={!hasSession}
+        />
+        <SpecStatusNode
+          className="absolute left-0 top-0 w-[29%]"
+          spec={spec}
+          clarifyingQuestions={clarifyingQuestions}
         />
         <ThinkCanvasNode
           className="absolute left-0 top-[27%] w-[28%]"
@@ -417,7 +441,7 @@ function ThinkCanvas({
           className="absolute right-0 top-[28%] w-[27%]"
           title="Design"
           eyebrow="Product feel"
-          summary={productWindow?.uiPrinciples[0] || "Design direction will appear as the Product Window forms."}
+          summary={productWindow?.uiPrinciples[0] || "Design direction will appear as the ServiceWindow forms."}
           items={productWindow?.uiPrinciples.slice(0, 3)}
           dormant={!productWindow}
         />
@@ -444,6 +468,53 @@ function ThinkCanvas({
           onCreateBuildTask={onCreateBuildTask}
         />
       </div>
+    </div>
+  );
+}
+
+function SpecStatusNode({
+  spec,
+  clarifyingQuestions,
+  className,
+}: {
+  spec?: BrainpressSpec;
+  clarifyingQuestions: ClarifyingQuestion[];
+  className?: string;
+}) {
+  const openQuestionCount = spec ? Math.max(spec.openQuestions.length, clarifyingQuestions.filter((question) => question.status !== "answered").length) : 0;
+  const needsClarification = spec?.clarificationStatus === "needs_clarification";
+  return (
+    <div
+      className={cx(
+        "rounded-lg border p-4 shadow-2xl backdrop-blur",
+        spec
+          ? "border-violet-300/20 bg-violet-300/[0.07] text-white shadow-violet-950/20"
+          : "border-white/10 bg-white/[0.035] text-slate-400",
+        className,
+      )}
+    >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-violet-200">Spec Loop</p>
+        <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", needsClarification ? "bg-amber-300/15 text-amber-200" : "bg-emerald-300/15 text-emerald-200")}>
+          {spec ? (needsClarification ? "Needs clarification" : "Clear enough") : "Draft"}
+        </span>
+      </div>
+      <h3 className="text-lg font-semibold tracking-normal">Service Spec</h3>
+      {spec ? (
+        <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
+          <div>
+            <p className="font-mono text-[10px] uppercase text-slate-500">What</p>
+            <p>{shortText(spec.what, 110)}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[10px] uppercase text-slate-500">Why</p>
+            <p>{shortText(spec.why, 110)}</p>
+          </div>
+          <p className="font-mono text-[11px] uppercase text-violet-100">{openQuestionCount} open questions</p>
+        </div>
+      ) : (
+        <p className="mt-2 text-sm leading-6 text-slate-400">A compact spec will appear after Brainpress shapes the first Think session.</p>
+      )}
     </div>
   );
 }
@@ -534,12 +605,12 @@ function ProductWindowNode({
           </div>
           <span className="truncate font-mono text-xs text-slate-400">{productWindow?.route || "/product-window/draft"}</span>
         </div>
-        <CanvasTag>Product UI</CanvasTag>
+        <CanvasTag>Service UI</CanvasTag>
       </div>
 
       <div className="p-4">
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-cyan-200">Product UI Example Window</p>
-        <h3 className="mt-2 text-xl font-semibold text-white">{productWindow?.title || "Product UI Example Window"}</h3>
+        <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-cyan-200">Service UI Example Window</p>
+        <h3 className="mt-2 text-xl font-semibold text-white">{productWindow?.title || "Service UI Example Window"}</h3>
         <p className="mt-2 text-sm leading-6 text-slate-300">
           {productWindow?.screenDescription || "A conceptual browser preview will appear here after the first Think session."}
         </p>
@@ -557,7 +628,7 @@ function ProductWindowNode({
               <div className="flex items-center justify-between border-b border-slate-200 bg-white/90 px-4 py-3">
                 <div className="flex items-center gap-2">
                   <span className="h-2.5 w-2.5 rounded-full bg-slate-900" />
-                  <span className="text-xs font-semibold">{productWindow?.title || "Draft product"}</span>
+                  <span className="text-xs font-semibold">{productWindow?.title || "Draft service"}</span>
                 </div>
                 <span className="rounded-md bg-slate-950 px-3 py-1.5 text-[11px] font-semibold text-white">
                   {productWindow?.primaryCTA || "Think with Brainpress"}
@@ -566,7 +637,7 @@ function ProductWindowNode({
 
               <div className="grid gap-0 md:grid-cols-[1.05fr_0.95fr]">
                 <div className="min-h-56 bg-white p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-600">Product UI</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-600">Service UI</p>
                   <h4 className="mt-3 text-2xl font-semibold tracking-normal">
                     {sections[0]?.title || productWindow?.title || "Shape the product"}
                   </h4>
@@ -598,7 +669,7 @@ function ProductWindowNode({
             </div>
 
             {!sections.length ? (
-              <p className="mt-3 text-xs text-slate-500">Draft preview. Start a conversation to generate the Product Window.</p>
+              <p className="mt-3 text-xs text-slate-500">Draft preview. Start a conversation to generate the ServiceWindow.</p>
             ) : null}
           </div>
         </div>
@@ -740,12 +811,12 @@ function sessionHistoryToMessages(sessions: ThinkSession[]): ThinkChatMessage[] 
 function assistantResponseFromThinkResult(result: { session: ThinkSession; productWindow?: ProductWindow }) {
   const taskCount = result.session.recommendedBuildTasks.length;
   const pieces = [
-    `I shaped this into a product direction: ${result.session.summary}`,
-    `I also updated the canvas with Vision, Roadmap, Features, Risks, and a Product Window preview.`,
+    `I shaped this into a service direction: ${result.session.summary}`,
+    `I also updated the canvas with Vision, Roadmap, Features, Risks, and a ServiceWindow preview.`,
     taskCount
       ? `I found ${taskCount} possible Build ${taskCount === 1 ? "task" : "tasks"}. You can create ${taskCount === 1 ? "it" : "them"} from the canvas.`
       : "I did not find a Build task yet. Add more detail and I will turn it into agent-ready work.",
-    result.productWindow ? "I also created a Product Window preview so you can see the product direction before building." : "",
+    result.productWindow ? "I also created a ServiceWindow preview so you can see the service direction before building." : "",
   ].filter(Boolean);
   return pieces.join("\n\n");
 }

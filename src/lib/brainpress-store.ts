@@ -4,12 +4,20 @@ import { initialState } from "@/lib/seed";
 import { loadBrainpressState, saveBrainpressState } from "@/lib/storage";
 import { getSupabasePublicConfig, supabaseHeaders, type SupabaseSession } from "@/lib/supabase-browser";
 import type {
+  BrainpressConstitution,
+  BrainpressPlan,
   BrainpressState,
+  BrainpressSpec,
+  BrainpressTaskList,
+  ClarifyingQuestion,
   DevelopmentTask,
   DevelopmentTaskResult,
   ProductWindow,
   Project,
   RunIssue,
+  BrainpressService,
+  ServiceAgent,
+  ServiceWindow,
   ThinkSession,
 } from "@/lib/types";
 
@@ -20,10 +28,26 @@ export interface BrainpressStore {
   listProjects(): Promise<Project[]>;
   getProject(projectId: string): Promise<Project | null>;
   saveProject(project: Project): Promise<void>;
+  listServices(): Promise<BrainpressService[]>;
+  saveService(service: BrainpressService): Promise<void>;
+  listServiceAgents(serviceId: string): Promise<ServiceAgent[]>;
+  saveServiceAgent(agent: ServiceAgent): Promise<void>;
+  listServiceWindows(serviceId: string): Promise<ServiceWindow[]>;
+  saveServiceWindow(window: ServiceWindow): Promise<void>;
   listThinkSessions(projectId: string): Promise<ThinkSession[]>;
   saveThinkSession(session: ThinkSession): Promise<void>;
   listProductWindows(projectId: string): Promise<ProductWindow[]>;
   saveProductWindow(window: ProductWindow): Promise<void>;
+  listConstitutions(projectId: string): Promise<BrainpressConstitution[]>;
+  saveConstitution(constitution: BrainpressConstitution): Promise<void>;
+  listSpecs(projectId: string): Promise<BrainpressSpec[]>;
+  saveSpec(spec: BrainpressSpec): Promise<void>;
+  listClarifyingQuestions(specIds: string[]): Promise<ClarifyingQuestion[]>;
+  saveClarifyingQuestion(question: ClarifyingQuestion): Promise<void>;
+  listPlans(projectId: string): Promise<BrainpressPlan[]>;
+  savePlan(plan: BrainpressPlan): Promise<void>;
+  listTaskLists(projectId: string): Promise<BrainpressTaskList[]>;
+  saveTaskList(taskList: BrainpressTaskList): Promise<void>;
   listDevelopmentTasks(projectId: string): Promise<DevelopmentTask[]>;
   saveDevelopmentTask(task: DevelopmentTask): Promise<void>;
   listDevelopmentTaskResults(projectId: string): Promise<DevelopmentTaskResult[]>;
@@ -76,6 +100,33 @@ export class LocalStorageBrainpressStore implements BrainpressStore {
     });
   }
 
+  async listServices() {
+    return loadBrainpressState().services || [];
+  }
+
+  async saveService(service: BrainpressService) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, services: upsertById(state.services || [], service) });
+  }
+
+  async listServiceAgents(serviceId: string) {
+    return (loadBrainpressState().serviceAgents || []).filter((agent) => agent.serviceId === serviceId);
+  }
+
+  async saveServiceAgent(agent: ServiceAgent) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, serviceAgents: upsertById(state.serviceAgents || [], agent) });
+  }
+
+  async listServiceWindows(serviceId: string) {
+    return (loadBrainpressState().serviceWindows || []).filter((window) => window.serviceId === serviceId);
+  }
+
+  async saveServiceWindow(window: ServiceWindow) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, serviceWindows: upsertById(state.serviceWindows || [], window) });
+  }
+
   async listThinkSessions(projectId: string) {
     return loadBrainpressState().thinkSessions.filter((session) => session.projectId === projectId);
   }
@@ -92,6 +143,52 @@ export class LocalStorageBrainpressStore implements BrainpressStore {
   async saveProductWindow(window: ProductWindow) {
     const state = loadBrainpressState();
     saveBrainpressState({ ...state, productWindows: upsertById(state.productWindows || [], window) });
+  }
+
+  async listConstitutions(projectId: string) {
+    return (loadBrainpressState().constitutions || []).filter((constitution) => constitution.projectId === projectId);
+  }
+
+  async saveConstitution(constitution: BrainpressConstitution) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, constitutions: upsertById(state.constitutions || [], constitution) });
+  }
+
+  async listSpecs(projectId: string) {
+    return (loadBrainpressState().specs || []).filter((spec) => spec.projectId === projectId);
+  }
+
+  async saveSpec(spec: BrainpressSpec) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, specs: upsertById(state.specs || [], spec) });
+  }
+
+  async listClarifyingQuestions(specIds: string[]) {
+    const specIdSet = new Set(specIds);
+    return (loadBrainpressState().clarifyingQuestions || []).filter((question) => specIdSet.has(question.specId));
+  }
+
+  async saveClarifyingQuestion(question: ClarifyingQuestion) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, clarifyingQuestions: upsertById(state.clarifyingQuestions || [], question) });
+  }
+
+  async listPlans(projectId: string) {
+    return (loadBrainpressState().plans || []).filter((plan) => plan.projectId === projectId);
+  }
+
+  async savePlan(plan: BrainpressPlan) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, plans: upsertById(state.plans || [], plan) });
+  }
+
+  async listTaskLists(projectId: string) {
+    return (loadBrainpressState().taskLists || []).filter((taskList) => taskList.projectId === projectId);
+  }
+
+  async saveTaskList(taskList: BrainpressTaskList) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, taskLists: upsertById(state.taskLists || [], taskList) });
   }
 
   async listDevelopmentTasks(projectId: string) {
@@ -145,6 +242,33 @@ export class SupabaseBrainpressStore implements BrainpressStore {
     await this.upsertRow("projects", projectToRow(project, this.session.user.id));
   }
 
+  async listServices() {
+    const rows = await this.listRows<ServiceRow>("services");
+    return rows.map(serviceFromRow);
+  }
+
+  async saveService(service: BrainpressService) {
+    await this.upsertRow("services", serviceToRow(service, this.session.user.id));
+  }
+
+  async listServiceAgents(serviceId: string) {
+    const rows = await this.listRows<ServiceAgentRow>("service_agents", `service_id=eq.${encodeURIComponent(serviceId)}`);
+    return rows.map(serviceAgentFromRow);
+  }
+
+  async saveServiceAgent(agent: ServiceAgent) {
+    await this.upsertRow("service_agents", serviceAgentToRow(agent, this.session.user.id));
+  }
+
+  async listServiceWindows(serviceId: string) {
+    const rows = await this.listRows<ServiceWindowRow>("service_windows", `service_id=eq.${encodeURIComponent(serviceId)}`);
+    return rows.map(serviceWindowFromRow);
+  }
+
+  async saveServiceWindow(window: ServiceWindow) {
+    await this.upsertRow("service_windows", serviceWindowToRow(window, this.session.user.id));
+  }
+
   async listThinkSessions(projectId: string) {
     const rows = await this.listRows<ThinkSessionRow>("think_sessions", `project_id=eq.${encodeURIComponent(projectId)}`);
     return rows.map(thinkSessionFromRow);
@@ -161,6 +285,55 @@ export class SupabaseBrainpressStore implements BrainpressStore {
 
   async saveProductWindow(window: ProductWindow) {
     await this.upsertRow("product_windows", productWindowToRow(window, this.session.user.id));
+  }
+
+  async listConstitutions(projectId: string) {
+    const rows = await this.listRows<ConstitutionRow>("brainpress_constitutions", `project_id=eq.${encodeURIComponent(projectId)}`);
+    return rows.map(constitutionFromRow);
+  }
+
+  async saveConstitution(constitution: BrainpressConstitution) {
+    await this.upsertRow("brainpress_constitutions", constitutionToRow(constitution, this.session.user.id));
+  }
+
+  async listSpecs(projectId: string) {
+    const rows = await this.listRows<SpecRow>("brainpress_specs", `project_id=eq.${encodeURIComponent(projectId)}`);
+    return rows.map(specFromRow);
+  }
+
+  async saveSpec(spec: BrainpressSpec) {
+    await this.upsertRow("brainpress_specs", specToRow(spec, this.session.user.id));
+  }
+
+  async listClarifyingQuestions(specIds: string[]) {
+    if (!specIds.length) return [];
+    const rows = await this.listRows<ClarifyingQuestionRow>(
+      "clarifying_questions",
+      `spec_id=in.(${specIds.map((id) => `"${id}"`).join(",")})`,
+    );
+    return rows.map(clarifyingQuestionFromRow);
+  }
+
+  async saveClarifyingQuestion(question: ClarifyingQuestion) {
+    await this.upsertRow("clarifying_questions", clarifyingQuestionToRow(question, this.session.user.id));
+  }
+
+  async listPlans(projectId: string) {
+    const rows = await this.listRows<PlanRow>("brainpress_plans", `project_id=eq.${encodeURIComponent(projectId)}`);
+    return rows.map(planFromRow);
+  }
+
+  async savePlan(plan: BrainpressPlan) {
+    await this.upsertRow("brainpress_plans", planToRow(plan, this.session.user.id));
+  }
+
+  async listTaskLists(projectId: string) {
+    const rows = await this.listRows<TaskListRow>("brainpress_task_lists", `project_id=eq.${encodeURIComponent(projectId)}`);
+    return rows.map(taskListFromRow);
+  }
+
+  async saveTaskList(taskList: BrainpressTaskList) {
+    await this.upsertRow("brainpress_task_lists", taskListToRow(taskList, this.session.user.id));
   }
 
   async listDevelopmentTasks(projectId: string) {
@@ -192,7 +365,12 @@ export class SupabaseBrainpressStore implements BrainpressStore {
 
   private async listRows<T>(table: string, filter = ""): Promise<T[]> {
     const config = this.requireConfig();
-    const order = table === "development_task_results" ? "created_at.desc" : "updated_at.desc.nullslast,created_at.desc";
+    const order =
+      table === "development_task_results"
+        ? "created_at.desc"
+        : table === "clarifying_questions"
+          ? "id.asc"
+          : "updated_at.desc.nullslast,created_at.desc";
     const query = filter ? `?${filter}&order=${order}` : `?order=${order}`;
     const response = await fetch(`${config.url}/rest/v1/${table}${query}`, {
       headers: {
@@ -228,19 +406,38 @@ export async function loadStateFromStore(store: BrainpressStore): Promise<Brainp
   if (store.mode === "local") return loadBrainpressState();
   const projects = await store.listProjects();
   const projectList = projects.length ? projects : initialState.projects;
-  const [thinkSessions, productWindows, developmentTasks, developmentTaskResults, runIssues] = await Promise.all([
+  const [servicesFromStore, thinkSessions, productWindows, constitutions, specs, plans, taskLists, developmentTasks, developmentTaskResults, runIssues] = await Promise.all([
+    store.listServices(),
     Promise.all(projectList.map((project) => store.listThinkSessions(project.id))).then((items) => items.flat()),
     Promise.all(projectList.map((project) => store.listProductWindows(project.id))).then((items) => items.flat()),
+    Promise.all(projectList.map((project) => store.listConstitutions(project.id))).then((items) => items.flat()),
+    Promise.all(projectList.map((project) => store.listSpecs(project.id))).then((items) => items.flat()),
+    Promise.all(projectList.map((project) => store.listPlans(project.id))).then((items) => items.flat()),
+    Promise.all(projectList.map((project) => store.listTaskLists(project.id))).then((items) => items.flat()),
     Promise.all(projectList.map((project) => store.listDevelopmentTasks(project.id))).then((items) => items.flat()),
     Promise.all(projectList.map((project) => store.listDevelopmentTaskResults(project.id))).then((items) => items.flat()),
     Promise.all(projectList.map((project) => store.listRunIssues(project.id))).then((items) => items.flat()),
   ]);
+  const serviceList = servicesFromStore.length ? servicesFromStore : initialState.services;
+  const [serviceAgents, serviceWindows] = await Promise.all([
+    Promise.all(serviceList.map((service) => store.listServiceAgents(service.id))).then((items) => items.flat()),
+    Promise.all(serviceList.map((service) => store.listServiceWindows(service.id))).then((items) => items.flat()),
+  ]);
+  const clarifyingQuestions = await store.listClarifyingQuestions(specs.map((spec) => spec.id));
 
   return {
     ...initialState,
+    services: serviceList,
+    serviceAgents,
+    serviceWindows,
     projects: projectList,
     thinkSessions,
     productWindows,
+    constitutions,
+    specs,
+    clarifyingQuestions,
+    plans,
+    taskLists,
     developmentTasks,
     developmentTaskResults,
     runIssues,
@@ -255,8 +452,16 @@ export async function saveStateToStore(store: BrainpressStore, state: Brainpress
 
   await Promise.all([
     ...state.projects.map((project) => store.saveProject(project)),
+    ...(state.services || []).map((service) => store.saveService(service)),
+    ...(state.serviceAgents || []).map((agent) => store.saveServiceAgent(agent)),
+    ...(state.serviceWindows || []).map((window) => store.saveServiceWindow(window)),
     ...(state.thinkSessions || []).map((session) => store.saveThinkSession(session)),
     ...(state.productWindows || []).map((window) => store.saveProductWindow(window)),
+    ...(state.constitutions || []).map((constitution) => store.saveConstitution(constitution)),
+    ...(state.specs || []).map((spec) => store.saveSpec(spec)),
+    ...(state.clarifyingQuestions || []).map((question) => store.saveClarifyingQuestion(question)),
+    ...(state.plans || []).map((plan) => store.savePlan(plan)),
+    ...(state.taskLists || []).map((taskList) => store.saveTaskList(taskList)),
     ...(state.developmentTasks || []).map((task) => store.saveDevelopmentTask(task)),
     ...(state.developmentTaskResults || []).map((result) => store.saveDevelopmentTaskResult(result)),
     ...(state.runIssues || []).map((issue) => store.saveRunIssue(issue)),
@@ -269,8 +474,16 @@ function upsertById<T extends { id: string }>(items: T[], item: T) {
 }
 
 type ProjectRow = Record<string, unknown>;
+type ServiceRow = Record<string, unknown>;
+type ServiceAgentRow = Record<string, unknown>;
+type ServiceWindowRow = Record<string, unknown>;
 type ThinkSessionRow = Record<string, unknown>;
 type ProductWindowRow = Record<string, unknown>;
+type ConstitutionRow = Record<string, unknown>;
+type SpecRow = Record<string, unknown>;
+type ClarifyingQuestionRow = Record<string, unknown>;
+type PlanRow = Record<string, unknown>;
+type TaskListRow = Record<string, unknown>;
 type DevelopmentTaskRow = Record<string, unknown>;
 type DevelopmentTaskResultRow = Record<string, unknown>;
 type RunIssueRow = Record<string, unknown>;
@@ -304,6 +517,117 @@ function projectFromRow(row: ProjectRow): Project {
     verificationCommands: arrayField<string>(row.verification_commands),
     safetyRules: stringField(row.safety_rules),
     createdAt: stringField(row.created_at, new Date().toISOString()),
+  };
+}
+
+function serviceToRow(service: BrainpressService, ownerId: string) {
+  return {
+    id: service.id,
+    owner_id: ownerId,
+    name: service.name,
+    description: service.description,
+    service_promise: service.servicePromise,
+    target_customer: service.targetCustomer,
+    desired_outcome: service.desiredOutcome,
+    current_stage: service.currentStage,
+    main_agent_id: service.mainAgentId,
+    agent_ids: service.agentIds,
+    service_workflow: service.serviceWorkflow,
+    human_approval_points: service.humanApprovalPoints,
+    success_metrics: service.successMetrics,
+    open_questions: service.openQuestions,
+    created_at: service.createdAt,
+    updated_at: service.updatedAt,
+  };
+}
+
+function serviceFromRow(row: ServiceRow): BrainpressService {
+  return {
+    id: stringField(row.id),
+    name: stringField(row.name),
+    description: stringField(row.description),
+    servicePromise: stringField(row.service_promise),
+    targetCustomer: stringField(row.target_customer),
+    desiredOutcome: stringField(row.desired_outcome || row.service_promise),
+    currentStage: stringField(row.current_stage, "idea") as BrainpressService["currentStage"],
+    mainAgentId: stringField(row.main_agent_id),
+    agentIds: arrayField<string>(row.agent_ids),
+    serviceWorkflow: arrayField<string>(row.service_workflow),
+    humanApprovalPoints: arrayField<string>(row.human_approval_points),
+    successMetrics: arrayField<string>(row.success_metrics),
+    openQuestions: arrayField<string>(row.open_questions),
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function serviceAgentToRow(agent: ServiceAgent, ownerId: string) {
+  return {
+    id: agent.id,
+    service_id: agent.serviceId,
+    owner_id: ownerId,
+    name: agent.name,
+    role: agent.role,
+    goal: agent.goal,
+    inputs: agent.inputs,
+    outputs: agent.outputs,
+    tools: agent.tools,
+    memory_scope: agent.memoryScope,
+    permission_level: agent.permissionLevel,
+    escalation_rules: agent.escalationRules,
+    success_metric: agent.successMetric,
+    status: agent.status,
+    created_at: agent.createdAt,
+    updated_at: agent.updatedAt,
+  };
+}
+
+function serviceAgentFromRow(row: ServiceAgentRow): ServiceAgent {
+  return {
+    id: stringField(row.id),
+    serviceId: stringField(row.service_id),
+    name: stringField(row.name),
+    role: stringField(row.role),
+    goal: stringField(row.goal),
+    inputs: arrayField<string>(row.inputs),
+    outputs: arrayField<string>(row.outputs),
+    tools: arrayField<string>(row.tools),
+    memoryScope: stringField(row.memory_scope),
+    permissionLevel: stringField(row.permission_level, "founder_approval_required") as ServiceAgent["permissionLevel"],
+    escalationRules: arrayField<string>(row.escalation_rules),
+    successMetric: stringField(row.success_metric),
+    status: stringField(row.status, "proposed") as ServiceAgent["status"],
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function serviceWindowToRow(window: ServiceWindow, ownerId: string) {
+  return {
+    id: window.id,
+    service_id: window.serviceId,
+    owner_id: ownerId,
+    status: window.status,
+    screens: window.screens,
+    primary_flow: window.primaryFlow,
+    agent_interaction_points: window.agentInteractionPoints,
+    human_approval_points: window.humanApprovalPoints,
+    generated_at: window.generatedAt,
+    updated_at: window.updatedAt,
+  };
+}
+
+function serviceWindowFromRow(row: ServiceWindowRow): ServiceWindow {
+  return {
+    id: stringField(row.id),
+    serviceId: stringField(row.service_id),
+    status: stringField(row.status, "empty") as ServiceWindow["status"],
+    screens: arrayField(row.screens),
+    primaryFlow: arrayField<string>(row.primary_flow),
+    agentInteractionPoints: arrayField<string>(row.agent_interaction_points),
+    humanApprovalPoints: arrayField<string>(row.human_approval_points),
+    generatedAt: optionalString(row.generated_at),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
   };
 }
 
@@ -407,6 +731,167 @@ function productWindowFromRow(row: ProductWindowRow): ProductWindow {
   };
 }
 
+function constitutionToRow(constitution: BrainpressConstitution, ownerId: string) {
+  return {
+    id: constitution.id,
+    project_id: constitution.projectId,
+    owner_id: ownerId,
+    principles: constitution.principles,
+    quality_rules: constitution.qualityRules,
+    testing_rules: constitution.testingRules,
+    architecture_rules: constitution.architectureRules,
+    ux_rules: constitution.uxRules,
+    safety_rules: constitution.safetyRules,
+    approval_rules: constitution.approvalRules,
+    created_at: constitution.createdAt,
+    updated_at: constitution.updatedAt,
+  };
+}
+
+function constitutionFromRow(row: ConstitutionRow): BrainpressConstitution {
+  return {
+    id: stringField(row.id),
+    projectId: stringField(row.project_id),
+    principles: arrayField<string>(row.principles),
+    qualityRules: arrayField<string>(row.quality_rules),
+    testingRules: arrayField<string>(row.testing_rules),
+    architectureRules: arrayField<string>(row.architecture_rules),
+    uxRules: arrayField<string>(row.ux_rules),
+    safetyRules: arrayField<string>(row.safety_rules),
+    approvalRules: arrayField<string>(row.approval_rules),
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function specToRow(spec: BrainpressSpec, ownerId: string) {
+  return {
+    id: spec.id,
+    project_id: spec.projectId,
+    service_id: spec.serviceId || spec.projectId,
+    owner_id: ownerId,
+    think_session_id: spec.thinkSessionId,
+    product_window_id: spec.productWindowId,
+    title: spec.title,
+    what: spec.what,
+    why: spec.why,
+    user_stories: spec.userStories,
+    success_criteria: spec.successCriteria,
+    non_goals: spec.nonGoals,
+    assumptions: spec.assumptions,
+    open_questions: spec.openQuestions,
+    clarification_status: spec.clarificationStatus,
+    created_at: spec.createdAt,
+    updated_at: spec.updatedAt,
+  };
+}
+
+function specFromRow(row: SpecRow): BrainpressSpec {
+  return {
+    id: stringField(row.id),
+    projectId: stringField(row.project_id),
+    serviceId: optionalString(row.service_id),
+    thinkSessionId: optionalString(row.think_session_id),
+    productWindowId: optionalString(row.product_window_id),
+    title: stringField(row.title),
+    what: stringField(row.what),
+    why: stringField(row.why),
+    userStories: arrayField<string>(row.user_stories),
+    successCriteria: arrayField<string>(row.success_criteria),
+    nonGoals: arrayField<string>(row.non_goals),
+    assumptions: arrayField<string>(row.assumptions),
+    openQuestions: arrayField<string>(row.open_questions),
+    clarificationStatus: stringField(row.clarification_status, "needs_clarification") as BrainpressSpec["clarificationStatus"],
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function clarifyingQuestionToRow(question: ClarifyingQuestion, ownerId: string) {
+  return {
+    id: question.id,
+    spec_id: question.specId,
+    owner_id: ownerId,
+    question: question.question,
+    reason: question.reason,
+    answer: question.answer,
+    status: question.status,
+  };
+}
+
+function clarifyingQuestionFromRow(row: ClarifyingQuestionRow): ClarifyingQuestion {
+  return {
+    id: stringField(row.id),
+    specId: stringField(row.spec_id),
+    question: stringField(row.question),
+    reason: stringField(row.reason),
+    answer: optionalString(row.answer),
+    status: stringField(row.status, "open") as ClarifyingQuestion["status"],
+  };
+}
+
+function planToRow(plan: BrainpressPlan, ownerId: string) {
+  return {
+    id: plan.id,
+    project_id: plan.projectId,
+    service_id: plan.serviceId || plan.projectId,
+    spec_id: plan.specId,
+    owner_id: ownerId,
+    technology_choices: plan.technologyChoices,
+    architecture_notes: plan.architectureNotes,
+    data_model: plan.dataModel,
+    api_contracts: plan.apiContracts,
+    risks: plan.risks,
+    validation_plan: plan.validationPlan,
+    created_at: plan.createdAt,
+    updated_at: plan.updatedAt,
+  };
+}
+
+function planFromRow(row: PlanRow): BrainpressPlan {
+  return {
+    id: stringField(row.id),
+    projectId: stringField(row.project_id),
+    serviceId: optionalString(row.service_id),
+    specId: stringField(row.spec_id),
+    technologyChoices: arrayField<string>(row.technology_choices),
+    architectureNotes: arrayField<string>(row.architecture_notes),
+    dataModel: arrayField<string>(row.data_model),
+    apiContracts: arrayField<string>(row.api_contracts),
+    risks: arrayField<string>(row.risks),
+    validationPlan: arrayField<string>(row.validation_plan),
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function taskListToRow(taskList: BrainpressTaskList, ownerId: string) {
+  return {
+    id: taskList.id,
+    project_id: taskList.projectId,
+    service_id: taskList.serviceId || taskList.projectId,
+    plan_id: taskList.planId,
+    owner_id: ownerId,
+    tasks: taskList.tasks,
+    dependency_order: taskList.dependencyOrder,
+    created_at: taskList.createdAt,
+    updated_at: taskList.updatedAt,
+  };
+}
+
+function taskListFromRow(row: TaskListRow): BrainpressTaskList {
+  return {
+    id: stringField(row.id),
+    projectId: stringField(row.project_id),
+    serviceId: optionalString(row.service_id),
+    planId: stringField(row.plan_id),
+    tasks: arrayField(row.tasks),
+    dependencyOrder: arrayField<string>(row.dependency_order),
+    createdAt: stringField(row.created_at, new Date().toISOString()),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
 function developmentTaskToRow(task: DevelopmentTask, ownerId: string) {
   return {
     id: task.id,
@@ -437,6 +922,10 @@ function developmentTaskToRow(task: DevelopmentTask, ownerId: string) {
     source_think_session_id: task.sourceThinkSessionId,
     source_product_window_id: task.sourceProductWindowId,
     source_run_issue_id: task.runIssueId,
+    service_id: task.serviceId || task.projectId,
+    source_spec_id: task.sourceSpecId,
+    source_plan_id: task.sourcePlanId,
+    source_spec_task_id: task.sourceSpecTaskId,
     agent_source: task.agentSource,
     agent_model: task.agentModel,
     agent_error: task.agentError,
@@ -475,6 +964,10 @@ function developmentTaskFromRow(row: DevelopmentTaskRow): DevelopmentTask {
     sourceThinkSessionId: optionalString(row.source_think_session_id),
     sourceProductWindowId: optionalString(row.source_product_window_id),
     runIssueId: optionalString(row.source_run_issue_id),
+    serviceId: optionalString(row.service_id),
+    sourceSpecId: optionalString(row.source_spec_id),
+    sourcePlanId: optionalString(row.source_plan_id),
+    sourceSpecTaskId: optionalString(row.source_spec_task_id),
     agentSource: optionalString(row.agent_source) as DevelopmentTask["agentSource"],
     agentModel: optionalString(row.agent_model),
     agentError: optionalString(row.agent_error),
