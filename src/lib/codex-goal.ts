@@ -1,4 +1,4 @@
-import type { DevelopmentTask, Memory, Project, ProjectImport } from "@/lib/types";
+import type { DevelopmentTask, Memory, Project, ProjectImport, ServiceThinkingArtifact } from "@/lib/types";
 
 export interface CodexGoalObjective {
   targetOutcome: string;
@@ -14,6 +14,7 @@ export function generateCodexGoalObjective({
   task,
   memory,
   sources = [],
+  thinkingArtifacts = [],
 }: {
   project: Project;
   task: Pick<
@@ -29,8 +30,9 @@ export function generateCodexGoalObjective({
   >;
   memory?: Memory;
   sources?: ProjectImport[];
+  thinkingArtifacts?: ServiceThinkingArtifact[];
 }): CodexGoalObjective {
-  const targetOutcome = buildTargetOutcome(project, task, memory, sources);
+  const targetOutcome = buildTargetOutcome(project, task, memory, sources, thinkingArtifacts);
   const requiredChecks = buildRequiredChecks(task);
   const validationLoop = buildValidationLoop(task, requiredChecks);
   const permissionGuidance = buildPermissionGuidance(project, task);
@@ -72,6 +74,7 @@ function buildTargetOutcome(
   task: Pick<DevelopmentTask, "title" | "description" | "affectedAreas" | "acceptanceCriteria" | "taskType">,
   memory?: Memory,
   sources: ProjectImport[] = [],
+  thinkingArtifacts: ServiceThinkingArtifact[] = [],
 ) {
   const architecture = memory?.technicalArchitecture ? ` Preserve the existing architecture: ${sentence(memory.technicalArchitecture)}` : "";
   const sourceContext = sources.length
@@ -79,12 +82,20 @@ function buildTargetOutcome(
     : "";
   const affectedAreas = task.affectedAreas.length ? ` Verify ${task.affectedAreas.join(", ")}.` : "";
   const acceptance = task.acceptanceCriteria.length ? ` Success means ${task.acceptanceCriteria.slice(0, 4).join(" ")}` : "";
+  const canvasContext = thinkingArtifacts.length
+    ? ` Use Think Dynamic Canvases as context: ${thinkingArtifacts
+        .filter((artifact) => artifact.status !== "archived")
+        .slice(0, 4)
+        .map((artifact) => `${artifact.title} (${artifact.type})`)
+        .join(", ")}.`
+    : "";
 
   return [
     `Target outcome: ${task.title}.`,
     sentence(task.description),
     architecture,
     sourceContext,
+    canvasContext,
     affectedAreas,
     acceptance,
     `Keep the work scoped to this ${task.taskType.replace(/_/g, " ")} task.`,

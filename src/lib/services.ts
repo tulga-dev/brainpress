@@ -12,9 +12,14 @@ import type {
   ServiceAgent,
   ServiceAgentPermissionLevel,
   ServiceAgentStatus,
+  ServiceThinkingArtifact,
   ServiceWindow,
+  ServiceWindowComponentSpec,
+  ServiceWindowInformationArchitecture,
   ServiceWindowScreen,
   ServiceWindowStatus,
+  ServiceWindowUxStrategy,
+  ServiceWindowVisualSystem,
 } from "@/lib/types";
 
 export function createServiceFromProject(project: Project, now = new Date().toISOString()): BrainpressService {
@@ -215,10 +220,18 @@ export function createEmptyServiceWindow(serviceId: string, now = new Date().toI
     id: `service_window_${serviceId}`,
     serviceId,
     status: "empty",
+    designAgentName: "Brainpress Design Agent",
+    designBrief: "",
     screens: [],
     primaryFlow: [],
     agentInteractionPoints: [],
     humanApprovalPoints: [],
+    componentSystem: [],
+    interactionStates: [],
+    responsiveBehavior: [],
+    accessibilityNotes: [],
+    implementationNotes: [],
+    codexImplementationPrompt: "",
     updatedAt: now,
   };
 }
@@ -237,70 +250,381 @@ export function generateServiceWindow({
   now?: string;
 }): ServiceWindow {
   const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
-  const planComponents = plan?.technologyChoices?.slice(0, 3) || [];
-  const screens: ServiceWindowScreen[] = [
-    {
-      id: uid("screen"),
-      name: "Service Intake",
-      purpose: `Capture what the ${service.targetCustomer || "user"} needs from the service.`,
-      keyComponents: dedupeStrings(["Outcome input", "Context upload area", "Service promise panel", ...planComponents]).slice(0, 6),
-      userInputs: ["Service request", "Relevant context", "Constraints"],
-      serviceOutputs: ["Structured intake summary", "Clarifying questions"],
-      agentInteractions: [`${mainAgent?.name || "Main agent"} reviews the request and frames the service workflow.`],
-      approvalPoints: [service.humanApprovalPoints[0] || "Founder approves moving from intake to Build or Run."],
-    },
-    {
-      id: uid("screen"),
-      name: "Agent Workbench",
-      purpose: "Show what the agent team is doing and what requires human approval.",
-      keyComponents: ["Agent team status", "Workflow steps", "Approval queue", "Codex task handoff", "Service workflow state"],
-      userInputs: ["Approval decisions", "Priority changes", "Follow-up notes"],
-      serviceOutputs: ["Build tasks", "Codex prompt package", "Run checklist", "Agent handoff state"],
-      agentInteractions: agents.map((agent) => `${agent.name}: ${agent.role}`),
-      approvalPoints: service.humanApprovalPoints.length ? service.humanApprovalPoints.slice(0, 3) : ["Founder approval before Codex dispatch.", "Founder approval before merge, deploy, or verified status."],
-    },
-    {
-      id: uid("screen"),
-      name: "Human Approval",
-      purpose: "Make risky service actions explicit before Codex, production, or customer-impacting work happens.",
-      keyComponents: ["Approval queue", "Risk explanation", "Permission policy", "Decision history"],
-      userInputs: ["Approve", "Reject", "Request clarification"],
-      serviceOutputs: ["Approved work package", "Blocked action", "Clarifying question"],
-      agentInteractions: agents.slice(0, 3).map((agent) => `${agent.name} explains what needs approval.`),
-      approvalPoints: service.humanApprovalPoints.length ? service.humanApprovalPoints : defaultHumanApprovalPoints(),
-    },
-    {
-      id: uid("screen"),
-      name: "Service Results",
-      purpose: "Review the service output, verification, risks, and next action.",
-      keyComponents: ["Result summary", "Verification evidence", "Risks", "Next action"],
-      userInputs: ["Accept result", "Request fix", "Create next Build task"],
-      serviceOutputs: ["Verified service output", "Fix task", "Run monitoring note"],
-      agentInteractions: ["QA Agent checks acceptance criteria and missing evidence."],
-      approvalPoints: ["Founder marks result accepted only after reviewing evidence."],
-    },
+  const designContext = [service.name, service.description, service.servicePromise, service.targetCustomer, spec?.what, plan?.architectureNotes.join(" ")].join(" ");
+  const domain = inferServiceDesignDomain(designContext);
+  const uxStrategy = createUxStrategy(service, domain);
+  const informationArchitecture = createInformationArchitecture(service, domain);
+  const screens = createDesignAgentScreens({ service, agents, mainAgent, spec, plan, domain });
+  const visualSystem = createVisualSystem(domain);
+  const componentSystem = createComponentSystem(domain, screens);
+  const primaryFlow = createPrimaryFlow(service, mainAgent, domain);
+  const agentInteractionPoints = [
+    `${mainAgent?.name || "Main agent"} owns the request, trust framing, and final recommendation.`,
+    ...agents.filter((agent) => agent.id !== mainAgent?.id).slice(0, 5).map((agent) => `${agent.name} contributes ${agent.outputs[0] || agent.goal}.`),
   ];
-
-  return {
+  const humanApprovalPoints = service.humanApprovalPoints.length ? service.humanApprovalPoints : defaultHumanApprovalPoints();
+  const baseWindow: ServiceWindow = {
     id: `service_window_${service.id}`,
     serviceId: service.id,
-    status: "generated",
+    status: "design_generated",
+    designAgentName: "Brainpress Design Agent",
+    designBrief: [
+      `Design a premium ${domain.label.toLowerCase()} for ${service.targetCustomer || "the target user"}.`,
+      `The interface must make agent work, evidence, risks, and human approval visible before the service output is trusted.`,
+      spec?.what ? `Service Spec: ${spec.what}` : "",
+    ].filter(Boolean).join(" "),
+    uxStrategy,
+    informationArchitecture,
     screens,
-    primaryFlow: [
-      `${service.targetCustomer || "User"} describes the desired outcome.`,
-      `${mainAgent?.name || "Main agent"} clarifies the request and routes work to Think, Build, or Run.`,
-      ...service.serviceWorkflow.slice(0, 3),
-      "Codex receives approved Build tasks when implementation is needed.",
-      "Brainpress verifies the result and asks for human approval before marking work complete.",
-    ].filter(Boolean),
-    agentInteractionPoints: [
-      `${mainAgent?.name || "Main agent"} owns orchestration.`,
-      ...agents.filter((agent) => agent.id !== mainAgent?.id).slice(0, 4).map((agent) => `${agent.name} supports ${agent.goal}`),
+    primaryFlow,
+    agentInteractionPoints,
+    humanApprovalPoints,
+    visualSystem,
+    componentSystem,
+    interactionStates: [
+      "Empty: explain what input the agent needs and show one primary intake action.",
+      "Loading: show agent/sub-agent activity with the current step and expected next artifact.",
+      "Needs approval: freeze risky actions behind explicit approve/reject controls.",
+      "Error: explain what failed, what evidence is missing, and the safest next action.",
+      "Success: show the recommendation, evidence, approvals, and follow-up Build or Run task.",
     ],
-    humanApprovalPoints: service.humanApprovalPoints.length ? service.humanApprovalPoints : defaultHumanApprovalPoints(),
+    responsiveBehavior: [
+      "Desktop: left command/intake rail with a right-side work canvas for evidence, approvals, and recommendations.",
+      "Tablet: keep the agent activity and approval queue visible above detailed evidence.",
+      "Mobile: stack intake, agent status, recommendation, and approvals; make GitHub Dispatch or copy fallback reachable without horizontal scrolling.",
+    ],
+    accessibilityNotes: [
+      "Every agent status and risk indicator must have text labels, not color alone.",
+      "Approval controls must be keyboard reachable and clearly describe consequences.",
+      "Evidence and source panels need readable contrast and collapsible long text.",
+    ],
+    implementationNotes: [
+      "Implement this as the ServiceWindow front office for the selected agent service, not a generic SaaS dashboard.",
+      "Keep Brainpress service/state engines intact and preserve Think / Build / Run navigation.",
+      "Codex is the only execution provider for this build pass.",
+      ...(plan?.validationPlan || []).slice(0, 3),
+    ],
     generatedAt: now,
     updatedAt: now,
   };
+
+  return {
+    ...baseWindow,
+    codexImplementationPrompt: createServiceWindowCodexPrompt({
+      service,
+      agents,
+      serviceWindow: baseWindow,
+      spec,
+      plan,
+    }),
+  };
+}
+
+interface ServiceDesignDomain {
+  key: "procurement" | "support" | "research" | "coding" | "lead_generation" | "general";
+  label: string;
+}
+
+function inferServiceDesignDomain(input: string): ServiceDesignDomain {
+  if (/(procurement|construction|vendor|quote|purchase order|supplier|budget|materials)/i.test(input)) {
+    return { key: "procurement", label: "Procurement Command Center" };
+  }
+  if (/(support|ticket|customer service|help desk|inbox)/i.test(input)) return { key: "support", label: "Support Operations Console" };
+  if (/(research|memo|analyst|document|pdf|sources)/i.test(input)) return { key: "research", label: "Research Analyst Workspace" };
+  if (/(codex|build|software|qa|github|deploy|vercel|supabase)/i.test(input)) return { key: "coding", label: "Agent Build Command Center" };
+  if (/(lead|sales|clinic|real estate|prospect|campaign)/i.test(input)) return { key: "lead_generation", label: "Lead Generation Control Room" };
+  return { key: "general", label: "Agent Service Workspace" };
+}
+
+function createUxStrategy(service: BrainpressService, domain: ServiceDesignDomain): ServiceWindowUxStrategy {
+  const trustConcernByDomain: Record<ServiceDesignDomain["key"], string> = {
+    procurement: "The founder must trust vendor comparisons, budget flags, and purchase recommendations before approving spend.",
+    support: "Operators must trust which messages the agent answered, escalated, or left unresolved.",
+    research: "Founders must see sources and uncertainty before relying on synthesized findings.",
+    coding: "Founders must understand what Codex will change, how it will be verified, and what needs approval.",
+    lead_generation: "Founders must trust lead quality, follow-up status, and conversion risk before outreach.",
+    general: "Users must understand what the agent is doing, what evidence it used, and what needs approval.",
+  };
+  return {
+    targetUser: service.targetCustomer || "Founder or operator",
+    jobToBeDone: service.desiredOutcome || service.servicePromise,
+    trustConcern: trustConcernByDomain[domain.key],
+    emotionalTone: domain.key === "procurement" ? "calm, exact, commercially confident" : "calm, premium, transparent, and agentic",
+    complexityLevel: domain.key === "general" ? "medium" : "high-context service work made simple",
+    successMoment: `The user approves a clear ${domain.label.toLowerCase()} recommendation with evidence, risk notes, and next steps.`,
+  };
+}
+
+function createInformationArchitecture(service: BrainpressService, domain: ServiceDesignDomain): ServiceWindowInformationArchitecture {
+  const domainNav: Record<ServiceDesignDomain["key"], string[]> = {
+    procurement: ["Intake", "Quotes", "Vendors", "Approvals", "Evidence", "Activity"],
+    support: ["Inbox", "Triage", "Responses", "Escalations", "Evidence", "Activity"],
+    research: ["Question", "Sources", "Findings", "Risks", "Recommendations", "Activity"],
+    coding: ["Intake", "Spec", "Build Tasks", "Verification", "Approvals", "Activity"],
+    lead_generation: ["Campaign", "Leads", "Qualification", "Follow-up", "Approvals", "Activity"],
+    general: ["Intake", "Workflow", "Recommendation", "Evidence", "Approvals", "Activity"],
+  };
+  return {
+    mainNavigation: domainNav[domain.key],
+    screenHierarchy: [`${domain.label} home`, "Work queue", "Evidence detail", "Approval detail", "Result review"],
+    keyObjects: dedupeStrings([
+      "Service request",
+      "Agent run",
+      "Evidence source",
+      "Approval decision",
+      "Risk flag",
+      "Recommendation",
+      ...(service.serviceWorkflow || []).slice(0, 3),
+    ]),
+    serviceStates: ["Draft intake", "Agent working", "Needs clarification", "Needs approval", "Ready to act", "Completed with evidence"],
+  };
+}
+
+function createDesignAgentScreens({
+  service,
+  agents,
+  mainAgent,
+  spec,
+  plan,
+  domain,
+}: {
+  service: BrainpressService;
+  agents: ServiceAgent[];
+  mainAgent?: ServiceAgent;
+  spec?: BrainpressSpec;
+  plan?: BrainpressPlan;
+  domain: ServiceDesignDomain;
+}): ServiceWindowScreen[] {
+  const planComponents = plan?.technologyChoices?.slice(0, 3) || [];
+  if (domain.key === "procurement") {
+    return [
+      designScreen({
+        name: "Procurement Intake",
+        purpose: "Capture the material, service, budget, deadline, and approval constraints for a construction purchase.",
+        userGoal: "Submit a purchase need without writing a procurement brief manually.",
+        keyComponents: ["Scope intake", "Budget target", "Deadline selector", "Required evidence", "Approval policy"],
+        userInputs: ["Item or service needed", "Quantity", "Budget", "Deadline", "Known vendors", "Constraints"],
+        serviceOutputs: ["Normalized procurement request", "Missing information questions", "Research plan"],
+        agentInteractions: [`${mainAgent?.name || "Main agent"} checks whether the request is ready for vendor research.`],
+        subAgentOutputs: agents.map((agent) => `${agent.name}: ${agent.outputs[0] || agent.goal}`),
+        approvalPoints: ["Founder approves vendor research scope before external outreach or purchase recommendation."],
+      }),
+      designScreen({
+        name: "Vendor / Quote Comparison",
+        purpose: "Compare vendor options, quotes, delivery timing, and risk in one decision surface.",
+        userGoal: "Understand which vendor is best and why.",
+        keyComponents: ["Quote comparison table", "Vendor reliability score", "Budget variance", "Delivery risk", "Evidence panel"],
+        components: ["EvidencePanel", "RiskBadge", "RecommendationCard", "AgentActivityTimeline"],
+        userInputs: ["Shortlist preference", "Reject vendor", "Request more evidence"],
+        serviceOutputs: ["Ranked vendor recommendation", "Risk flags", "Evidence-backed rationale"],
+        agentInteractions: ["Vendor Research Agent summarizes evidence and tradeoffs.", "Budget Agent flags cost variance."],
+        subAgentOutputs: ["Vendor summaries", "Budget flags", "Delivery risk notes"],
+        approvalPoints: ["Founder approves the recommended vendor before purchase or outreach."],
+      }),
+      designScreen({
+        name: "Request Pipeline",
+        purpose: "Show procurement requests by stage so operators know what is blocked, active, or approved.",
+        userGoal: "Track every purchase request without losing context.",
+        keyComponents: ["Pipeline columns", "Agent status cards", "Approval queue", "SLA indicators", "Activity timeline"],
+        components: ["AgentStatusCard", "ApprovalQueue", "AgentActivityTimeline", "BuildReadinessPanel"],
+        userInputs: ["Prioritize", "Approve", "Pause", "Ask for clarification"],
+        serviceOutputs: ["Pipeline state", "Next action", "Blocked request explanation"],
+        agentInteractions: ["Main agent updates stage and next action.", "QA Agent checks missing approval evidence."],
+        subAgentOutputs: ["Status updates", "Clarification requests", "Approval recommendations"],
+        approvalPoints: service.humanApprovalPoints,
+      }),
+      designScreen({
+        name: "Purchase Recommendation",
+        purpose: "Present the final procurement decision with evidence, risks, and approval actions.",
+        userGoal: "Approve or reject the safest purchase decision.",
+        keyComponents: ["Recommendation summary", "Budget and risk flags", "Evidence/source documents", "Approval actions", "Next steps"],
+        components: ["RecommendationCard", "EvidencePanel", "ApprovalQueue", "RiskBadge"],
+        userInputs: ["Approve purchase", "Reject", "Request new quote", "Add note"],
+        serviceOutputs: ["Approved purchase package", "Rejected recommendation", "Follow-up task"],
+        agentInteractions: ["Main agent explains the decision.", "Risk agent highlights unknowns."],
+        subAgentOutputs: ["Evidence list", "Risk notes", "Follow-up tasks"],
+        approvalPoints: ["Founder approval required before purchase, vendor commitment, or budget change."],
+      }),
+    ];
+  }
+
+  return [
+    designScreen({
+      name: "Service Intake",
+      purpose: `Capture what the ${service.targetCustomer || "user"} needs from the service.`,
+      userGoal: "Start the service with enough context for the agent team to act safely.",
+      keyComponents: dedupeStrings(["Outcome input", "Context upload area", "Service promise panel", "Trust and permission note", ...planComponents]).slice(0, 7),
+      userInputs: ["Service request", "Relevant context", "Constraints", "Approval preference"],
+      serviceOutputs: ["Structured intake summary", "Clarifying questions", "Next recommended action"],
+      agentInteractions: [`${mainAgent?.name || "Main agent"} reviews the request and frames the service workflow.`],
+      subAgentOutputs: agents.slice(1, 4).map((agent) => `${agent.name}: ${agent.outputs[0] || agent.goal}`),
+      approvalPoints: [service.humanApprovalPoints[0] || "Founder approves moving from intake to Build or Run."],
+    }),
+    designScreen({
+      name: `${domain.label} Board`,
+      purpose: "Show the service workflow, agent work state, and human approval queue in one operating surface.",
+      userGoal: "Know what the agent is doing and what needs human judgment.",
+      keyComponents: ["Agent team status", "Workflow steps", "Approval queue", "Evidence drawer", "Risk flags", "Next action"],
+      userInputs: ["Approval decisions", "Priority changes", "Follow-up notes"],
+      serviceOutputs: ["Build tasks", "Codex prompt package", "Run checklist", "Agent handoff state"],
+      agentInteractions: agents.map((agent) => `${agent.name}: ${agent.role}`),
+      subAgentOutputs: agents.slice(1, 5).map((agent) => `${agent.name} output: ${agent.outputs[0] || agent.goal}`),
+      approvalPoints: service.humanApprovalPoints.length ? service.humanApprovalPoints.slice(0, 3) : defaultHumanApprovalPoints(),
+    }),
+    designScreen({
+      name: "Evidence & Approval Detail",
+      purpose: "Make sources, reasoning, risk, and approval consequences explicit.",
+      userGoal: "Decide whether to trust the agent recommendation.",
+      keyComponents: ["Evidence panel", "Source memory", "Risk explanation", "Approval controls", "Decision history"],
+      userInputs: ["Approve", "Reject", "Request clarification"],
+      serviceOutputs: ["Approved work package", "Blocked action", "Clarifying question"],
+      agentInteractions: agents.slice(0, 3).map((agent) => `${agent.name} explains what needs approval.`),
+      subAgentOutputs: agents.slice(1, 4).map((agent) => agent.outputs[0] || agent.goal),
+      approvalPoints: service.humanApprovalPoints.length ? service.humanApprovalPoints : defaultHumanApprovalPoints(),
+    }),
+    designScreen({
+      name: "Service Results",
+      purpose: "Review the service output, verification, risks, and next action.",
+      userGoal: "Accept a result only when the evidence is clear.",
+      keyComponents: ["Result summary", "Verification evidence", "Risks", "Next action", "Follow-up task"],
+      userInputs: ["Accept result", "Request fix", "Create next Build task"],
+      serviceOutputs: ["Verified service output", "Fix task", "Run monitoring note"],
+      agentInteractions: ["QA Agent checks acceptance criteria and missing evidence."],
+      subAgentOutputs: ["Verification result", "Risk note", "Suggested follow-up"],
+      approvalPoints: ["Founder marks result accepted only after reviewing evidence."],
+    }),
+  ];
+}
+
+function designScreen(params: Omit<ServiceWindowScreen, "id" | "emptyState" | "loadingState" | "errorState" | "successState">): ServiceWindowScreen {
+  return {
+    id: uid("screen"),
+    components: params.components || params.keyComponents,
+    approvalActions: ["Approve", "Reject", "Request clarification"],
+    evidenceDisplay: ["Source list", "Agent reasoning summary", "Risk and uncertainty notes"],
+    emptyState: `No ${params.name.toLowerCase()} data yet. Start with a service request or generated agent output.`,
+    loadingState: "Agent team is working. Show current step, active sub-agent, and expected output.",
+    errorState: "Show what failed, what evidence is missing, and the safest next action.",
+    successState: "Show final recommendation, evidence used, approval status, and next task.",
+    ...params,
+  };
+}
+
+function createVisualSystem(domain: ServiceDesignDomain): ServiceWindowVisualSystem {
+  return {
+    productFeel: domain.key === "procurement" ? "premium operations cockpit with financial trust cues" : "minimal agent command center with visible trust and approval moments",
+    typographyDirection: "Inter or Geist-style sans for UI, compact mono labels for agent state, commands, evidence IDs, and verification details.",
+    spacingDensity: "Spacious first screen, denser evidence and queue sections for repeated operator use.",
+    cardStyle: "Thin bordered cards, 8px radius, quiet depth, clear section hierarchy, no decorative clutter.",
+    tableListStyle: domain.key === "procurement" ? "Comparison tables with sticky vendor names, budget variance, delivery risk, and evidence links." : "Scan-friendly lists with status, owner agent, risk, evidence, and next action.",
+    formStyle: "One primary intake path with progressive disclosure for constraints, sources, and approval requirements.",
+    statusBadgeStyle: "Plain-language status badges for agent state, risk, approval, evidence, and verification.",
+    motionNotes: "Use subtle transitions for agent activity, approval state changes, and evidence drawer expansion; avoid flashy animation.",
+    premiumPolishNotes: [
+      "Make the main recommendation visually dominant only after evidence exists.",
+      "Keep approval actions fixed near the relevant risk explanation.",
+      "Use empty states to teach what the service needs next.",
+    ],
+  };
+}
+
+function createComponentSystem(domain: ServiceDesignDomain, screens: ServiceWindowScreen[]): ServiceWindowComponentSpec[] {
+  const common: ServiceWindowComponentSpec[] = [
+    {
+      name: "AgentStatusCard",
+      purpose: "Show what each agent or sub-agent is doing right now.",
+      usedIn: screens.map((screen) => screen.name).filter((name) => /board|pipeline|workbench|intake/i.test(name)),
+      dataShown: ["Agent name", "Current step", "Output expected", "Risk state"],
+      states: ["idle", "working", "needs_input", "blocked", "complete"],
+    },
+    {
+      name: "ApprovalQueue",
+      purpose: "Collect decisions that need explicit human approval.",
+      usedIn: screens.map((screen) => screen.name).filter((name) => /approval|pipeline|board|recommendation/i.test(name)),
+      dataShown: ["Action requested", "Reason", "Risk", "Consequence", "Approve/reject controls"],
+      states: ["empty", "pending", "approved", "rejected", "needs_clarification"],
+    },
+    {
+      name: "EvidencePanel",
+      purpose: "Show sources, documents, reasoning, and confidence behind the output.",
+      usedIn: screens.map((screen) => screen.name),
+      dataShown: ["Source title", "Relevant excerpt", "Agent note", "Risk or uncertainty"],
+      states: ["collapsed", "expanded", "missing_evidence"],
+    },
+    {
+      name: "ServiceIntakeForm",
+      purpose: "Capture the minimum useful context before agents work.",
+      usedIn: screens.map((screen) => screen.name).filter((name) => /intake/i.test(name)),
+      dataShown: ["Request", "Constraints", "Sources", "Approval boundaries"],
+      states: ["empty", "draft", "needs_more_context", "ready"],
+    },
+    {
+      name: "AgentActivityTimeline",
+      purpose: "Explain what happened without exposing noisy logs.",
+      usedIn: screens.map((screen) => screen.name),
+      dataShown: ["Timestamp", "Agent", "Action", "Output", "Next step"],
+      states: ["live", "completed", "filtered"],
+    },
+    {
+      name: "RecommendationCard",
+      purpose: "Present the final service recommendation with confidence, evidence, risks, and next action.",
+      usedIn: screens.map((screen) => screen.name).filter((name) => /recommendation|results|comparison/i.test(name)),
+      dataShown: ["Recommendation", "Why", "Evidence", "Risk", "Approval action"],
+      states: ["draft", "ready_for_review", "approved", "rejected"],
+    },
+    {
+      name: "RiskBadge",
+      purpose: "Make unknowns and operational risks visible without alarmism.",
+      usedIn: screens.map((screen) => screen.name),
+      dataShown: ["Risk label", "Severity", "Reason", "Follow-up"],
+      states: ["low", "medium", "high", "unknown"],
+    },
+    {
+      name: "SourceMemoryPanel",
+      purpose: "Keep relevant source memory accessible but secondary.",
+      usedIn: screens.map((screen) => screen.name).filter((name) => /evidence|intake|recommendation/i.test(name)),
+      dataShown: ["Source", "Summary", "Why it matters", "Last updated"],
+      states: ["collapsed", "expanded", "empty"],
+    },
+    {
+      name: "BuildReadinessPanel",
+      purpose: "Show whether the service output is ready for Codex, Run, or human action.",
+      usedIn: screens.map((screen) => screen.name),
+      dataShown: ["Readiness state", "Missing inputs", "Verification needed", "Next action"],
+      states: ["needs_clarification", "ready", "blocked", "verified"],
+    },
+  ];
+  if (domain.key !== "procurement") return common;
+  return [
+    {
+      name: "QuoteComparisonTable",
+      purpose: "Compare vendors, quotes, budget variance, delivery timing, and evidence.",
+      usedIn: ["Vendor / Quote Comparison", "Purchase Recommendation"],
+      dataShown: ["Vendor", "Quote", "Delivery date", "Budget variance", "Risk", "Evidence"],
+      states: ["loading_quotes", "ready", "missing_quote", "selected"],
+    },
+    ...common,
+  ];
+}
+
+function createPrimaryFlow(service: BrainpressService, mainAgent: ServiceAgent | undefined, domain: ServiceDesignDomain) {
+  if (domain.key === "procurement") {
+    return [
+      "Construction operator submits a procurement request with budget, deadline, and constraints.",
+      `${mainAgent?.name || "Main agent"} checks missing context and plans vendor or quote research.`,
+      "Sub-agents collect quotes, compare vendors, flag budget or delivery risk, and attach evidence.",
+      "Founder reviews the recommendation, evidence, risks, and approval queue.",
+      "Approved purchase recommendation becomes the next operational action or Build task if software changes are required.",
+    ];
+  }
+  return [
+    `${service.targetCustomer || "User"} describes the desired outcome.`,
+    `${mainAgent?.name || "Main agent"} clarifies the request and routes work to Think, Build, or Run.`,
+    ...service.serviceWorkflow.slice(0, 3),
+    "Agents expose evidence, risks, and approval moments before action.",
+    "Codex receives approved Build tasks when implementation is needed.",
+    "Brainpress verifies the result and asks for human approval before marking work complete.",
+  ].filter(Boolean);
 }
 
 export function createServiceWindowCodexPrompt({
@@ -311,6 +635,7 @@ export function createServiceWindowCodexPrompt({
   plan,
   taskLists = [],
   developmentTasks = [],
+  thinkingArtifacts = [],
   memory,
 }: {
   service: BrainpressService;
@@ -320,11 +645,14 @@ export function createServiceWindowCodexPrompt({
   plan?: BrainpressPlan;
   taskLists?: BrainpressTaskList[];
   developmentTasks?: DevelopmentTask[];
+  thinkingArtifacts?: ServiceThinkingArtifact[];
   memory?: Memory;
 }) {
   const specTasks = taskLists.flatMap((taskList) => taskList.tasks);
   return [
-    `# Codex Build Prompt: ${service.name} UI/UX`,
+    `# Codex Build Prompt: ${service.name} Design Agent UI`,
+    "",
+    "Implement a premium, production-quality ServiceWindow UI for this agent-based Service. This is not a static mockup or generic SaaS dashboard.",
     "",
     "## Service Context",
     `Service Promise: ${service.servicePromise}`,
@@ -337,6 +665,18 @@ export function createServiceWindowCodexPrompt({
     spec?.why ? `Why: ${spec.why}` : "",
     spec?.successCriteria?.length ? ["", "## Spec Success Criteria", ...spec.successCriteria.map((item) => `- ${item}`)].join("\n") : "",
     plan ? `Plan: ${plan.architectureNotes.join(" ")}` : "",
+    thinkingArtifacts.length ? [
+      "",
+      "## Think Dynamic Canvases",
+      ...thinkingArtifacts
+        .filter((artifact) => artifact.status !== "archived")
+        .slice(0, 8)
+        .flatMap((artifact) => [
+          `### ${artifact.title} (${artifact.type})`,
+          `Purpose: ${artifact.purpose}`,
+          ...artifact.content.slice(0, 6).map((item) => `- ${item}`),
+        ]),
+    ].join("\n") : "",
     specTasks.length ? ["", "## Ordered Spec Tasks", ...specTasks.map((task) => `- ${task.title}: ${task.description}`)].join("\n") : "",
     developmentTasks.length ? ["", "## Existing DevelopmentTasks", ...developmentTasks.slice(0, 8).map((task) => `- ${task.title} (${task.status})`)].join("\n") : "",
     developmentTasks.length ? ["", "## Acceptance Criteria", ...dedupeStrings(developmentTasks.flatMap((task) => task.acceptanceCriteria)).slice(0, 12).map((item) => `- ${item}`)].join("\n") : "",
@@ -345,19 +685,72 @@ export function createServiceWindowCodexPrompt({
     "## Agent Team",
     ...agents.map((agent) => `- ${agent.name}: ${agent.goal} Permission: ${agent.permissionLevel}. Inputs: ${agent.inputs.join(", ")}. Outputs: ${agent.outputs.join(", ")}.`),
     "",
-    "## Generated Service UI/UX",
+    "## Design Agent Output",
+    `Design Agent: ${serviceWindow.designAgentName || "Brainpress Design Agent"}`,
+    serviceWindow.designBrief ? `Design Brief: ${serviceWindow.designBrief}` : "",
+    serviceWindow.uxStrategy ? [
+      "",
+      "### UX Strategy",
+      `Target user: ${serviceWindow.uxStrategy.targetUser}`,
+      `Job to be done: ${serviceWindow.uxStrategy.jobToBeDone}`,
+      `Trust concern: ${serviceWindow.uxStrategy.trustConcern}`,
+      `Emotional tone: ${serviceWindow.uxStrategy.emotionalTone}`,
+      `Complexity level: ${serviceWindow.uxStrategy.complexityLevel}`,
+      `Success moment: ${serviceWindow.uxStrategy.successMoment}`,
+    ].join("\n") : "",
+    serviceWindow.informationArchitecture ? [
+      "",
+      "### Information Architecture",
+      `Main navigation: ${serviceWindow.informationArchitecture.mainNavigation.join(", ")}`,
+      `Screen hierarchy: ${serviceWindow.informationArchitecture.screenHierarchy.join(" > ")}`,
+      `Key objects: ${serviceWindow.informationArchitecture.keyObjects.join(", ")}`,
+      `Service states: ${serviceWindow.informationArchitecture.serviceStates.join(", ")}`,
+    ].join("\n") : "",
+    "",
+    "### Screen Map",
     ...serviceWindow.screens.flatMap((screen) => [
       `### ${screen.name}`,
       `Purpose: ${screen.purpose}`,
-      `Components: ${screen.keyComponents.join(", ")}`,
+      screen.userGoal ? `User goal: ${screen.userGoal}` : "",
+      `Key sections: ${screen.keyComponents.join(", ")}`,
+      `Components: ${(screen.components?.length ? screen.components : screen.keyComponents).join(", ")}`,
       `Inputs: ${screen.userInputs.join(", ")}`,
       `Outputs: ${screen.serviceOutputs.join(", ")}`,
+      screen.subAgentOutputs?.length ? `Sub-agent outputs: ${screen.subAgentOutputs.join(", ")}` : "",
       `Agent interactions: ${screen.agentInteractions.join(", ")}`,
       `Approval points: ${screen.approvalPoints.join(", ")}`,
+      screen.evidenceDisplay?.length ? `Evidence/source display: ${screen.evidenceDisplay.join(", ")}` : "",
+      screen.emptyState ? `Empty state: ${screen.emptyState}` : "",
+      screen.loadingState ? `Loading state: ${screen.loadingState}` : "",
+      screen.errorState ? `Error state: ${screen.errorState}` : "",
+      screen.successState ? `Success state: ${screen.successState}` : "",
       "",
     ]),
+    serviceWindow.visualSystem ? [
+      "",
+      "## Visual System",
+      `Product feel: ${serviceWindow.visualSystem.productFeel}`,
+      `Typography: ${serviceWindow.visualSystem.typographyDirection}`,
+      `Spacing/density: ${serviceWindow.visualSystem.spacingDensity}`,
+      `Cards: ${serviceWindow.visualSystem.cardStyle}`,
+      `Tables/lists: ${serviceWindow.visualSystem.tableListStyle}`,
+      `Forms: ${serviceWindow.visualSystem.formStyle}`,
+      `Status badges: ${serviceWindow.visualSystem.statusBadgeStyle}`,
+      `Motion: ${serviceWindow.visualSystem.motionNotes}`,
+      ...serviceWindow.visualSystem.premiumPolishNotes.map((note) => `- ${note}`),
+    ].join("\n") : "",
+    serviceWindow.componentSystem?.length ? [
+      "",
+      "## Component System",
+      ...serviceWindow.componentSystem.map((component) => `- ${component.name}: ${component.purpose}. Used in: ${component.usedIn.join(", ")}. Data: ${component.dataShown.join(", ")}. States: ${component.states.join(", ")}.`),
+    ].join("\n") : "",
+    serviceWindow.interactionStates?.length ? ["", "## Interaction States", ...serviceWindow.interactionStates.map((item) => `- ${item}`)].join("\n") : "",
+    serviceWindow.responsiveBehavior?.length ? ["", "## Responsive Behavior", ...serviceWindow.responsiveBehavior.map((item) => `- ${item}`)].join("\n") : "",
+    serviceWindow.accessibilityNotes?.length ? ["", "## Accessibility Notes", ...serviceWindow.accessibilityNotes.map((item) => `- ${item}`)].join("\n") : "",
+    serviceWindow.implementationNotes?.length ? ["", "## Implementation Notes", ...serviceWindow.implementationNotes.map((item) => `- ${item}`)].join("\n") : "",
     "## Requirements",
-    "- Implement the service front office, not generic dashboard filler.",
+    "- Implement the service front office and Design Agent output, not generic dashboard filler.",
+    "- Make the UI specific to this Service, target customer, agent team, workflow, evidence, approval moments, and risk model.",
     "- Implement the agent infrastructure surfaces needed to show main agent, sub-agents, workflow state, approvals, and result review.",
     "- Preserve existing PDF upload, memory/sources, Spec Loop, DevelopmentTasks, GitHub Dispatch, Local Bridge, and local/cloud storage behavior.",
     "- Make human approval explicit before Codex dispatch, merge, deploy, or verified status.",
@@ -422,6 +815,17 @@ export function normalizeServiceWindow(value: Partial<ServiceWindow>, serviceId?
     primaryFlow: arrayField(value.primaryFlow),
     agentInteractionPoints: arrayField(value.agentInteractionPoints),
     humanApprovalPoints: arrayField(value.humanApprovalPoints),
+    designAgentName: value.designAgentName || "Brainpress Design Agent",
+    designBrief: value.designBrief || "",
+    uxStrategy: normalizeUxStrategy(value.uxStrategy),
+    informationArchitecture: normalizeInformationArchitecture(value.informationArchitecture),
+    visualSystem: normalizeVisualSystem(value.visualSystem),
+    componentSystem: Array.isArray(value.componentSystem) ? value.componentSystem.map(normalizeComponentSpec) : [],
+    interactionStates: arrayField(value.interactionStates),
+    responsiveBehavior: arrayField(value.responsiveBehavior),
+    accessibilityNotes: arrayField(value.accessibilityNotes),
+    implementationNotes: arrayField(value.implementationNotes),
+    codexImplementationPrompt: value.codexImplementationPrompt || "",
     generatedAt: value.generatedAt,
     updatedAt: value.updatedAt || now,
   };
@@ -432,11 +836,67 @@ function normalizeServiceWindowScreen(value: Partial<ServiceWindowScreen>): Serv
     id: value.id || uid("screen"),
     name: value.name || "Service screen",
     purpose: value.purpose || "",
+    userGoal: value.userGoal || "",
     keyComponents: arrayField(value.keyComponents),
+    components: arrayField(value.components),
     userInputs: arrayField(value.userInputs),
     serviceOutputs: arrayField(value.serviceOutputs),
     agentInteractions: arrayField(value.agentInteractions),
+    subAgentOutputs: arrayField(value.subAgentOutputs),
     approvalPoints: arrayField(value.approvalPoints),
+    approvalActions: arrayField(value.approvalActions),
+    evidenceDisplay: arrayField(value.evidenceDisplay),
+    emptyState: value.emptyState || "",
+    loadingState: value.loadingState || "",
+    errorState: value.errorState || "",
+    successState: value.successState || "",
+  };
+}
+
+function normalizeUxStrategy(value: unknown): ServiceWindowUxStrategy | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    targetUser: stringField(value.targetUser),
+    jobToBeDone: stringField(value.jobToBeDone),
+    trustConcern: stringField(value.trustConcern),
+    emotionalTone: stringField(value.emotionalTone),
+    complexityLevel: stringField(value.complexityLevel),
+    successMoment: stringField(value.successMoment),
+  };
+}
+
+function normalizeInformationArchitecture(value: unknown): ServiceWindowInformationArchitecture | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    mainNavigation: arrayField(value.mainNavigation),
+    screenHierarchy: arrayField(value.screenHierarchy),
+    keyObjects: arrayField(value.keyObjects),
+    serviceStates: arrayField(value.serviceStates),
+  };
+}
+
+function normalizeVisualSystem(value: unknown): ServiceWindowVisualSystem | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    productFeel: stringField(value.productFeel),
+    typographyDirection: stringField(value.typographyDirection),
+    spacingDensity: stringField(value.spacingDensity),
+    cardStyle: stringField(value.cardStyle),
+    tableListStyle: stringField(value.tableListStyle),
+    formStyle: stringField(value.formStyle),
+    statusBadgeStyle: stringField(value.statusBadgeStyle),
+    motionNotes: stringField(value.motionNotes),
+    premiumPolishNotes: arrayField(value.premiumPolishNotes),
+  };
+}
+
+function normalizeComponentSpec(value: Partial<ServiceWindowComponentSpec>): ServiceWindowComponentSpec {
+  return {
+    name: value.name || "Service component",
+    purpose: value.purpose || "",
+    usedIn: arrayField(value.usedIn),
+    dataShown: arrayField(value.dataShown),
+    states: arrayField(value.states),
   };
 }
 
@@ -645,6 +1105,14 @@ function arrayField(value: unknown): string[] {
     : [];
 }
 
+function stringField(value: unknown, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function isServiceStage(value: unknown): value is BrainpressServiceStage {
   return value === "idea" || value === "needs_clarification" || value === "spec_ready" || value === "build_ready" || value === "running";
 }
@@ -658,5 +1126,5 @@ function isAgentStatus(value: unknown): value is ServiceAgentStatus {
 }
 
 function isServiceWindowStatus(value: unknown): value is ServiceWindowStatus {
-  return value === "empty" || value === "generated" || value === "needs_refinement";
+  return value === "empty" || value === "generated" || value === "design_generated" || value === "implementation_ready" || value === "built" || value === "needs_refinement";
 }

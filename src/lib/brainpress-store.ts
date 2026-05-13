@@ -18,6 +18,7 @@ import type {
   BrainpressService,
   ServiceAgent,
   ServiceWindow,
+  ServiceThinkingArtifact,
   ThinkSession,
 } from "@/lib/types";
 
@@ -34,6 +35,8 @@ export interface BrainpressStore {
   saveServiceAgent(agent: ServiceAgent): Promise<void>;
   listServiceWindows(serviceId: string): Promise<ServiceWindow[]>;
   saveServiceWindow(window: ServiceWindow): Promise<void>;
+  listThinkingArtifacts(serviceId: string): Promise<ServiceThinkingArtifact[]>;
+  saveThinkingArtifact(artifact: ServiceThinkingArtifact): Promise<void>;
   listThinkSessions(projectId: string): Promise<ThinkSession[]>;
   saveThinkSession(session: ThinkSession): Promise<void>;
   listProductWindows(projectId: string): Promise<ProductWindow[]>;
@@ -125,6 +128,15 @@ export class LocalStorageBrainpressStore implements BrainpressStore {
   async saveServiceWindow(window: ServiceWindow) {
     const state = loadBrainpressState();
     saveBrainpressState({ ...state, serviceWindows: upsertById(state.serviceWindows || [], window) });
+  }
+
+  async listThinkingArtifacts(serviceId: string) {
+    return (loadBrainpressState().thinkingArtifacts || []).filter((artifact) => artifact.serviceId === serviceId);
+  }
+
+  async saveThinkingArtifact(artifact: ServiceThinkingArtifact) {
+    const state = loadBrainpressState();
+    saveBrainpressState({ ...state, thinkingArtifacts: upsertById(state.thinkingArtifacts || [], artifact) });
   }
 
   async listThinkSessions(projectId: string) {
@@ -267,6 +279,15 @@ export class SupabaseBrainpressStore implements BrainpressStore {
 
   async saveServiceWindow(window: ServiceWindow) {
     await this.upsertRow("service_windows", serviceWindowToRow(window, this.session.user.id));
+  }
+
+  async listThinkingArtifacts(serviceId: string) {
+    const rows = await this.listRows<ThinkingArtifactRow>("service_thinking_artifacts", `service_id=eq.${encodeURIComponent(serviceId)}`);
+    return rows.map(thinkingArtifactFromRow);
+  }
+
+  async saveThinkingArtifact(artifact: ServiceThinkingArtifact) {
+    await this.upsertRow("service_thinking_artifacts", thinkingArtifactToRow(artifact, this.session.user.id));
   }
 
   async listThinkSessions(projectId: string) {
@@ -419,9 +440,10 @@ export async function loadStateFromStore(store: BrainpressStore): Promise<Brainp
     Promise.all(projectList.map((project) => store.listRunIssues(project.id))).then((items) => items.flat()),
   ]);
   const serviceList = servicesFromStore.length ? servicesFromStore : initialState.services;
-  const [serviceAgents, serviceWindows] = await Promise.all([
+  const [serviceAgents, serviceWindows, thinkingArtifacts] = await Promise.all([
     Promise.all(serviceList.map((service) => store.listServiceAgents(service.id))).then((items) => items.flat()),
     Promise.all(serviceList.map((service) => store.listServiceWindows(service.id))).then((items) => items.flat()),
+    Promise.all(serviceList.map((service) => store.listThinkingArtifacts(service.id))).then((items) => items.flat()),
   ]);
   const clarifyingQuestions = await store.listClarifyingQuestions(specs.map((spec) => spec.id));
 
@@ -430,6 +452,7 @@ export async function loadStateFromStore(store: BrainpressStore): Promise<Brainp
     services: serviceList,
     serviceAgents,
     serviceWindows,
+    thinkingArtifacts,
     projects: projectList,
     thinkSessions,
     productWindows,
@@ -455,6 +478,7 @@ export async function saveStateToStore(store: BrainpressStore, state: Brainpress
     ...(state.services || []).map((service) => store.saveService(service)),
     ...(state.serviceAgents || []).map((agent) => store.saveServiceAgent(agent)),
     ...(state.serviceWindows || []).map((window) => store.saveServiceWindow(window)),
+    ...(state.thinkingArtifacts || []).map((artifact) => store.saveThinkingArtifact(artifact)),
     ...(state.thinkSessions || []).map((session) => store.saveThinkSession(session)),
     ...(state.productWindows || []).map((window) => store.saveProductWindow(window)),
     ...(state.constitutions || []).map((constitution) => store.saveConstitution(constitution)),
@@ -477,6 +501,7 @@ type ProjectRow = Record<string, unknown>;
 type ServiceRow = Record<string, unknown>;
 type ServiceAgentRow = Record<string, unknown>;
 type ServiceWindowRow = Record<string, unknown>;
+type ThinkingArtifactRow = Record<string, unknown>;
 type ThinkSessionRow = Record<string, unknown>;
 type ProductWindowRow = Record<string, unknown>;
 type ConstitutionRow = Record<string, unknown>;
@@ -608,10 +633,21 @@ function serviceWindowToRow(window: ServiceWindow, ownerId: string) {
     service_id: window.serviceId,
     owner_id: ownerId,
     status: window.status,
+    design_agent_name: window.designAgentName,
+    design_brief: window.designBrief,
+    ux_strategy: window.uxStrategy,
+    information_architecture: window.informationArchitecture,
     screens: window.screens,
     primary_flow: window.primaryFlow,
     agent_interaction_points: window.agentInteractionPoints,
     human_approval_points: window.humanApprovalPoints,
+    visual_system: window.visualSystem,
+    component_system: window.componentSystem,
+    interaction_states: window.interactionStates,
+    responsive_behavior: window.responsiveBehavior,
+    accessibility_notes: window.accessibilityNotes,
+    implementation_notes: window.implementationNotes,
+    codex_implementation_prompt: window.codexImplementationPrompt,
     generated_at: window.generatedAt,
     updated_at: window.updatedAt,
   };
@@ -622,11 +658,57 @@ function serviceWindowFromRow(row: ServiceWindowRow): ServiceWindow {
     id: stringField(row.id),
     serviceId: stringField(row.service_id),
     status: stringField(row.status, "empty") as ServiceWindow["status"],
+    designAgentName: optionalString(row.design_agent_name),
+    designBrief: optionalString(row.design_brief),
+    uxStrategy: row.ux_strategy as ServiceWindow["uxStrategy"],
+    informationArchitecture: row.information_architecture as ServiceWindow["informationArchitecture"],
     screens: arrayField(row.screens),
     primaryFlow: arrayField<string>(row.primary_flow),
     agentInteractionPoints: arrayField<string>(row.agent_interaction_points),
     humanApprovalPoints: arrayField<string>(row.human_approval_points),
+    visualSystem: row.visual_system as ServiceWindow["visualSystem"],
+    componentSystem: arrayField(row.component_system),
+    interactionStates: arrayField<string>(row.interaction_states),
+    responsiveBehavior: arrayField<string>(row.responsive_behavior),
+    accessibilityNotes: arrayField<string>(row.accessibility_notes),
+    implementationNotes: arrayField<string>(row.implementation_notes),
+    codexImplementationPrompt: optionalString(row.codex_implementation_prompt),
     generatedAt: optionalString(row.generated_at),
+    updatedAt: stringField(row.updated_at, new Date().toISOString()),
+  };
+}
+
+function thinkingArtifactToRow(artifact: ServiceThinkingArtifact, ownerId: string) {
+  return {
+    id: artifact.id,
+    service_id: artifact.serviceId,
+    owner_id: ownerId,
+    type: artifact.type,
+    title: artifact.title,
+    purpose: artifact.purpose,
+    content: artifact.content,
+    source_message_ids: artifact.sourceMessageIds,
+    confidence: artifact.confidence,
+    status: artifact.status,
+    created_by_agent: artifact.createdByAgent,
+    created_at: artifact.createdAt,
+    updated_at: artifact.updatedAt,
+  };
+}
+
+function thinkingArtifactFromRow(row: ThinkingArtifactRow): ServiceThinkingArtifact {
+  return {
+    id: stringField(row.id),
+    serviceId: stringField(row.service_id),
+    type: stringField(row.type, "custom") as ServiceThinkingArtifact["type"],
+    title: stringField(row.title, "Thinking Canvas"),
+    purpose: stringField(row.purpose, "Capture useful service thinking."),
+    content: arrayField<string>(row.content),
+    sourceMessageIds: arrayField<string>(row.source_message_ids),
+    confidence: typeof row.confidence === "number" ? row.confidence : Number(row.confidence || 0.65),
+    status: stringField(row.status, "active") as ServiceThinkingArtifact["status"],
+    createdByAgent: stringField(row.created_by_agent, "Agent Development Agent"),
+    createdAt: stringField(row.created_at, new Date().toISOString()),
     updatedAt: stringField(row.updated_at, new Date().toISOString()),
   };
 }

@@ -42,6 +42,10 @@ import {
   normalizeThinkSession,
 } from "../src/lib/think-sessions";
 import {
+  generateThinkingArtifacts,
+  normalizeThinkingArtifact,
+} from "../src/lib/think-canvases";
+import {
   createDevelopmentTaskFromProductWindow,
   createProductWindowFromThinkSession,
   inferProductWindowPreviewType,
@@ -371,7 +375,7 @@ test("Service Blueprint generation refines service promise, agent team, workflow
   assert.ok(blueprint.agents.some((agent) => /QA & Verification Agent/i.test(agent.name)));
 });
 
-test("ServiceWindow starts empty, generates service UI/UX, and exports a Codex prompt", () => {
+test("Design Agent starts empty, generates premium ServiceWindow UI/UX, and exports a Codex prompt", () => {
   const service = createServiceFromProject(brainpressCoreProject, "2026-05-13T00:00:00.000Z");
   const emptyWindow = createEmptyServiceWindow(service.id, "2026-05-13T00:00:00.000Z");
   const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
@@ -422,19 +426,178 @@ test("ServiceWindow starts empty, generates service UI/UX, and exports a Codex p
 
   assert.equal(emptyWindow.status, "empty");
   assert.equal(emptyWindow.screens.length, 0);
-  assert.equal(generatedWindow.status, "generated");
+  assert.equal(generatedWindow.status, "design_generated");
   assert.equal(generatedWindow.serviceId, service.id);
   assert.ok(generatedWindow.screens.length >= 3);
+  assert.equal(generatedWindow.designAgentName, "Brainpress Design Agent");
+  assert.ok(generatedWindow.designBrief?.length);
+  assert.ok(generatedWindow.uxStrategy?.trustConcern.length);
+  assert.ok(generatedWindow.informationArchitecture?.mainNavigation.length);
+  assert.ok(generatedWindow.visualSystem?.productFeel.length);
+  assert.ok((generatedWindow.componentSystem || []).some((component) => component.name === "AgentStatusCard"));
+  assert.ok(generatedWindow.interactionStates?.some((state) => /Needs approval/i.test(state)));
+  assert.ok(generatedWindow.codexImplementationPrompt?.includes("Design Agent Output"));
   assert.match(generatedWindow.primaryFlow.join("\n"), /Founder/i);
   assert.match(generatedWindow.agentInteractionPoints.join("\n"), /agent/i);
   assert.match(generatedWindow.humanApprovalPoints.join("\n"), /Codex dispatch|merge|deploy/i);
   assert.match(prompt, /Codex Build Prompt/);
   assert.match(prompt, /Service Promise/);
   assert.match(prompt, /Agent Team/);
-  assert.match(prompt, /Generated Service UI\/UX/);
+  assert.match(prompt, /Design Agent Output/);
+  assert.match(prompt, /UX Strategy/);
+  assert.match(prompt, /Component System/);
+  assert.match(prompt, /Visual System/);
   assert.match(prompt, /Ordered Spec Tasks/);
   assert.match(prompt, /Existing DevelopmentTasks/);
   assert.match(prompt, /Preserve existing PDF upload/);
+});
+
+test("Design Agent creates procurement-specific ServiceWindow output", () => {
+  const project = createProjectFromServiceInput({
+    serviceName: "Construction Procurement Service",
+    targetCustomer: "Local construction company operators",
+    outcome: "Compare vendor quotes and recommend safe purchases with budget and delivery risk evidence.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const service = createServiceFromInput({
+    project,
+    serviceName: "Construction Procurement Service",
+    targetCustomer: "Local construction company operators",
+    outcome: "Compare vendor quotes and recommend safe purchases with budget and delivery risk evidence.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
+  const window = generateServiceWindow({
+    service,
+    agents,
+    now: "2026-05-13T00:01:00.000Z",
+  });
+  const prompt = createServiceWindowCodexPrompt({ service, agents, serviceWindow: window });
+
+  assert.match(window.informationArchitecture?.mainNavigation.join("\n") || "", /Quotes|Vendors|Approvals/i);
+  assert.match(window.screens.map((screen) => screen.name).join("\n"), /Procurement Intake|Vendor \/ Quote Comparison|Purchase Recommendation/i);
+  assert.match(window.screens.flatMap((screen) => screen.keyComponents).join("\n"), /Quote comparison table|Budget|Vendor/i);
+  assert.ok(window.componentSystem?.some((component) => component.name === "QuoteComparisonTable"));
+  assert.match(window.visualSystem?.tableListStyle || "", /vendor|quote|budget/i);
+  assert.match(prompt, /Procurement Intake/);
+  assert.match(prompt, /QuoteComparisonTable/);
+});
+
+test("Agent Development Agent creates only clarifying canvas for vague ideas", () => {
+  const service = {
+    ...createServiceFromInput({
+      project: brainpressCoreProject,
+      serviceName: "New Service",
+      targetCustomer: "",
+      outcome: "",
+      now: "2026-05-13T00:00:00.000Z",
+    }),
+    servicePromise: "",
+    targetCustomer: "",
+    desiredOutcome: "",
+    serviceWorkflow: [],
+    humanApprovalPoints: [],
+    successMetrics: [],
+    openQuestions: [],
+  };
+  const artifacts = generateThinkingArtifacts({
+    service,
+    input: "help",
+    existingArtifacts: [],
+    now: "2026-05-13T00:01:00.000Z",
+  });
+
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].type, "clarifying_questions");
+  assert.match(artifacts[0].title, /Clarifying Questions/);
+});
+
+test("initial Think state has no pre-populated dynamic canvas cards", async () => {
+  await withMockLocalStorage(async () => {
+    const state = loadBrainpressState();
+    const initialArtifacts = (state.thinkingArtifacts || []).filter((artifact) => artifact.serviceId === brainpressCoreProject.id);
+
+    assert.equal(initialArtifacts.length, 0);
+  });
+});
+
+test("Agent Development Agent creates procurement-specific dynamic canvases", () => {
+  const project = createProjectFromServiceInput({
+    serviceName: "Construction Procurement Service",
+    targetCustomer: "Local construction company operators",
+    outcome: "Compare vendor quotes and recommend safe purchases.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const service = createServiceFromInput({
+    project,
+    serviceName: "Construction Procurement Service",
+    targetCustomer: "Local construction company operators",
+    outcome: "Compare vendor quotes and recommend safe purchases.",
+    now: "2026-05-13T00:00:00.000Z",
+  });
+  const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
+  const artifacts = generateThinkingArtifacts({
+    service,
+    agents,
+    input: "Build a procurement agent for a construction company that compares vendor quotes and needs approval policy.",
+    existingArtifacts: [],
+    now: "2026-05-13T00:02:00.000Z",
+  });
+  const titles = artifacts.map((artifact) => artifact.title).join("\n");
+  const types = artifacts.map((artifact) => artifact.type);
+
+  assert.match(titles, /Vendor Workflow/);
+  assert.match(titles, /Quote Comparison Features/);
+  assert.match(titles, /Procurement Approval Policy/);
+  assert.match(titles, /Procurement Risk Map/);
+  assert.match(titles, /Build Roadmap/);
+  assert.ok(types.includes("agent_team"));
+});
+
+test("dynamic Think canvases update instead of duplicating and persist through normalization", async () => {
+  await withMockLocalStorage(async () => {
+    const service = createServiceFromInput({
+      project: brainpressCoreProject,
+      serviceName: "Brainpress Test Service",
+      targetCustomer: "Founder-builders",
+      outcome: "Turn messy ideas into agent-ready build work.",
+      now: "2026-05-13T00:00:00.000Z",
+    });
+    const first = generateThinkingArtifacts({
+      service,
+      input: "Create feature map and roadmap for an agent task service.",
+      existingArtifacts: [],
+      now: "2026-05-13T00:03:00.000Z",
+    });
+    const second = generateThinkingArtifacts({
+      service,
+      input: "Refine feature map and roadmap with UI/UX brief.",
+      existingArtifacts: first,
+      now: "2026-05-13T00:04:00.000Z",
+    });
+    const featureMaps = second.filter((artifact) => artifact.type === "feature_map");
+    const normalized = normalizeThinkingArtifact({ ...second[0], confidence: 2 });
+
+    assert.equal(featureMaps.length, 1);
+    assert.equal(normalized.confidence, 1);
+    assert.ok(second.some((artifact) => artifact.type === "ui_ux_brief"));
+  });
+});
+
+test("Codex UI build prompt includes relevant dynamic Think canvases", () => {
+  const service = createServiceFromProject(brainpressCoreProject, "2026-05-13T00:00:00.000Z");
+  const agents = createDefaultServiceAgents(service, "2026-05-13T00:00:00.000Z");
+  const window = generateServiceWindow({ service, agents, now: "2026-05-13T00:01:00.000Z" });
+  const thinkingArtifacts = generateThinkingArtifacts({
+    service,
+    agents,
+    input: "Create a UI/UX brief and feature map for Brainpress.",
+    now: "2026-05-13T00:02:00.000Z",
+  });
+  const prompt = createServiceWindowCodexPrompt({ service, agents, serviceWindow: window, thinkingArtifacts });
+
+  assert.match(prompt, /Think Dynamic Canvases/);
+  assert.match(prompt, /UI\/UX Brief|Service Capabilities/);
 });
 
 test("Service normalization preserves agents and generated UI for legacy storage", async () => {
@@ -2830,49 +2993,44 @@ test("Service workspace exposes Service Overview, Agent Team, ServiceWindow, Thi
   assert.match(componentSource, /AgentTeamTab/);
   assert.match(componentSource, /ServiceWindowTab/);
   assert.match(componentSource, /Agent-native Service/);
-  assert.match(componentSource, /Generate UI\/UX/);
-  assert.match(componentSource, /No service UI generated yet/);
+  assert.match(componentSource, /Run Design Agent/);
+  assert.match(componentSource, /No premium service UI designed yet/);
+  assert.match(componentSource, /UX Strategy/);
+  assert.match(componentSource, /Screen Map/);
+  assert.match(componentSource, /Visual System/);
+  assert.match(componentSource, /Component System/);
   assert.match(componentSource, /Export Codex Build Prompt/);
-  assert.match(thinkSource, /Founder Input/);
-  assert.match(thinkSource, /Think Canvas/);
-  assert.match(thinkSource, /Service Spec/);
-  assert.match(thinkSource, /Agent Blueprint/);
-  assert.match(thinkSource, /Build Readiness/);
+  assert.match(thinkSource, /Agent Development Agent/);
+  assert.match(thinkSource, /Co-think the Service before Codex builds it/);
+  assert.match(thinkSource, /Dynamic Canvas/);
+  assert.match(thinkSource, /No canvases yet/);
+  assert.match(thinkSource, /Let Brainpress organize this/);
   assert.match(thinkSource, /Ask Brainpress about your service idea/);
   assert.match(thinkSource, /ThinkChatMessage/);
   assert.match(thinkSource, /Brainpress is thinking through the service direction/);
   assert.match(thinkSource, /I shaped this into a service direction/);
-  assert.match(thinkSource, /I also updated the canvas with Service Spec, Service Workflow, Risks, Agent Blueprint, and Build Readiness/);
+  assert.match(thinkSource, /I also updated the Dynamic Canvas with the artifacts this idea needs right now/);
   assert.match(thinkSource, /I couldn't complete that Think session/);
-  assert.match(thinkSource, /Think Canvas/);
-  assert.match(thinkSource, /Shape the Service before Codex builds it\./);
-  assert.match(thinkSource, /founder idea to Service Spec, Agent Blueprint, approval points, and build-ready direction/);
   assert.match(thinkSource, /Clarify idea/);
   assert.match(thinkSource, /Define MVP/);
   assert.match(thinkSource, /Create service spec/);
   assert.match(thinkSource, /Plan build path/);
   assert.match(thinkSource, /Analyze risk/);
-  assert.match(thinkSource, /Service Brief/);
-  assert.match(thinkSource, /Build Path/);
-  assert.match(thinkSource, /No decisions yet/);
-  assert.match(thinkSource, /Service Promise/);
-  assert.match(thinkSource, /Target Customer/);
-  assert.match(thinkSource, /Desired Outcome/);
-  assert.match(thinkSource, /Service Workflow/);
-  assert.match(thinkSource, /Service Capabilities/);
-  assert.match(thinkSource, /Approval Points/);
-  assert.match(thinkSource, /Main Agent/);
-  assert.match(thinkSource, /Next Build Step/);
-  assert.match(thinkSource, /Service Spec/);
-  assert.match(thinkSource, /Needs clarification/);
+  assert.match(thinkSource, /Service brief/);
+  assert.match(thinkSource, /Build path/);
+  assert.match(thinkSource, /Describe the service you want to create/);
+  assert.match(thinkSource, /Co-think with Brainpress to generate the right artifacts/);
+  assert.match(thinkSource, /ThinkingArtifactCard/);
+  assert.match(thinkSource, /formatCanvasType/);
   assert.match(thinkSource, /Generate Service Blueprint/);
   assert.match(thinkSource, /Generate Build Plan/);
-  assert.match(thinkSource, /Create Build Task/);
   assert.match(thinkSource, /Live AI/);
   assert.match(thinkSource, /Local fallback/);
   assert.doesNotMatch(thinkSource, /Service UI Example Window/);
   assert.doesNotMatch(thinkSource, /Agent-built preview page/);
   assert.doesNotMatch(thinkSource, /Product UI/);
+  assert.doesNotMatch(thinkSource, /Center Column/);
+  assert.doesNotMatch(thinkSource, /Service Capabilities will appear as the spec becomes clearer/);
   assert.doesNotMatch(thinkSource, /What are we trying to figure out\?/);
   assert.doesNotMatch(thinkSource, /Co-create artifacts/);
   assert.doesNotMatch(thinkSource, /Generated product direction/);

@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, CornerDownRight, Plus, Send, Sparkles } from "lucide-react";
+import { CornerDownRight, Send, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThinkAgentResult } from "@/lib/agent-gateway";
 import type {
@@ -9,8 +9,8 @@ import type {
   BrainpressAgentSource,
   ClarifyingQuestion,
   ProductWindow,
-  RecommendedBuildTask,
   ServiceAgent,
+  ServiceThinkingArtifact,
   ThinkArtifactType,
   ThinkMode,
   ThinkSession,
@@ -25,6 +25,7 @@ interface ThinkOperatingTabProps {
   sessions: ThinkSession[];
   productWindows: ProductWindow[];
   specs: BrainpressSpec[];
+  thinkingArtifacts: ServiceThinkingArtifact[];
   clarifyingQuestions: ClarifyingQuestion[];
   selectedSessionId: string;
   mode: ThinkMode;
@@ -34,11 +35,8 @@ interface ThinkOperatingTabProps {
   onArtifactTypeChange: (value: ThinkArtifactType) => void;
   onSelectSession: (id: string) => void;
   onCreateProductDirection: () => Promise<ThinkCreationResult | null>;
-  onCreateBuildTask: (session: ThinkSession, recommendation: RecommendedBuildTask) => void;
-  onRegenerateProductWindow: (session: ThinkSession) => void;
-  onApproveProductWindow: (productWindow: ProductWindow) => void;
-  onCreateProductWindowBuildTask: (session: ThinkSession, productWindow: ProductWindow) => void;
   onGenerateServiceBlueprint: () => void;
+  onGenerateThinkCanvases: () => void;
   onGenerateBuildPlan: (spec: BrainpressSpec) => void;
   thinkingWithAgent: boolean;
 }
@@ -83,6 +81,7 @@ export function ThinkOperatingTab({
   sessions,
   productWindows,
   specs,
+  thinkingArtifacts,
   clarifyingQuestions,
   selectedSessionId,
   mode,
@@ -92,11 +91,8 @@ export function ThinkOperatingTab({
   onArtifactTypeChange,
   onSelectSession,
   onCreateProductDirection,
-  onCreateBuildTask,
-  onRegenerateProductWindow,
-  onApproveProductWindow,
-  onCreateProductWindowBuildTask,
   onGenerateServiceBlueprint,
+  onGenerateThinkCanvases,
   onGenerateBuildPlan,
   thinkingWithAgent,
 }: ThinkOperatingTabProps) {
@@ -118,24 +114,24 @@ export function ThinkOperatingTab({
   return (
     <section className="overflow-hidden rounded-lg border border-slate-800 bg-[#05070d] text-white shadow-2xl">
       <div className="border-b border-white/10 bg-[#070a12] px-5 py-4">
-        <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Think Canvas</p>
+        <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Agent Development Agent</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-normal text-white md:text-3xl">
-              Shape the Service before Codex builds it.
+              Co-think the Service before Codex builds it.
             </h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-              Move from founder idea to Service Spec, Agent Blueprint, approval points, and build-ready direction.
+              Describe the service. Brainpress will create only the thinking canvases this idea actually needs.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {selectedSession ? <CanvasTag>{formatThinkArtifactType(selectedSession.artifactType)}</CanvasTag> : null}
-            <CanvasTag>{selectedSpec?.clarificationStatus === "needs_clarification" ? "Needs clarification" : selectedSpec ? "Build direction ready" : "Draft"}</CanvasTag>
+            <CanvasTag>{thinkingArtifacts.length ? `${thinkingArtifacts.length} canvases` : "No canvases yet"}</CanvasTag>
+            {selectedSession?.agentSource ? <AgentSourcePill source={selectedSession.agentSource} model={selectedSession.agentModel} /> : null}
           </div>
         </div>
       </div>
 
-      <div className="grid min-h-[760px] lg:grid-cols-[360px_minmax(0,1.15fr)_minmax(320px,0.9fr)]">
+      <div className="grid min-h-[760px] lg:grid-cols-[380px_minmax(0,1fr)]">
         <ThinkCofounderSidebar
           projectName={projectName}
           service={service}
@@ -153,15 +149,14 @@ export function ThinkOperatingTab({
           onSelectSession={onSelectSession}
           onCreateProductDirection={createProductDirectionFromChat}
         />
-        <ThinkCanvas
+        <DynamicThinkCanvas
           service={service}
-          agents={agents}
+          artifacts={thinkingArtifacts}
           selectedSession={selectedSession}
-          spec={selectedSpec}
-          clarifyingQuestions={selectedClarifyingQuestions}
-          onCreateBuildTask={onCreateBuildTask}
           onGenerateServiceBlueprint={onGenerateServiceBlueprint}
+          onGenerateThinkCanvases={onGenerateThinkCanvases}
           onGenerateBuildPlan={onGenerateBuildPlan}
+          spec={selectedSpec}
         />
       </div>
     </section>
@@ -349,9 +344,9 @@ function ThinkCofounderSidebar({
           </div>
         ) : (
           <div className="rounded-lg border border-white/10 bg-white/[0.035] p-4">
-            <p className="text-sm font-medium text-white">No decisions yet.</p>
+            <p className="text-sm font-medium text-white">Describe the service you want to create.</p>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              Start by describing what you are trying to figure out. Brainpress will organize the thinking on the canvas.
+              Brainpress will co-think with you and create the right canvases as the idea becomes clear.
             </p>
           </div>
         )}
@@ -378,149 +373,112 @@ function ThinkCofounderSidebar({
   );
 }
 
-function ThinkCanvas({
+function DynamicThinkCanvas({
   service,
-  agents,
+  artifacts,
   selectedSession,
   spec,
-  clarifyingQuestions,
-  onCreateBuildTask,
   onGenerateServiceBlueprint,
+  onGenerateThinkCanvases,
   onGenerateBuildPlan,
 }: {
   service: BrainpressService;
-  agents: ServiceAgent[];
+  artifacts: ServiceThinkingArtifact[];
   selectedSession?: ThinkSession;
   spec?: BrainpressSpec;
-  clarifyingQuestions: ClarifyingQuestion[];
-  onCreateBuildTask: (session: ThinkSession, recommendation: RecommendedBuildTask) => void;
+  onGenerateServiceBlueprint: () => void;
+  onGenerateThinkCanvases: () => void;
+  onGenerateBuildPlan: (spec: BrainpressSpec) => void;
+}) {
+  const activeArtifacts = artifacts.filter((artifact) => artifact.status !== "archived");
+  return (
+    <main className="relative min-h-[760px] overflow-hidden bg-[#05070d] p-4 md:p-6">
+      <CanvasBackdrop />
+      <div className="relative z-10 mx-auto flex max-w-6xl flex-col gap-5">
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-slate-950/75 p-4 shadow-2xl shadow-blue-950/20 backdrop-blur md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">Dynamic Canvas</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-normal text-white">Let the idea decide the artifacts.</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+              Brainpress creates service briefs, workflows, approval policies, feature maps, and Build paths only when the conversation earns them.
+            </p>
+          </div>
+          <Button variant="primary" onClick={onGenerateThinkCanvases}>
+            <Sparkles className="h-4 w-4" />
+            Let Brainpress organize this
+          </Button>
+        </div>
+
+        {activeArtifacts.length ? (
+          <div className="grid gap-4 xl:grid-cols-2">
+            {activeArtifacts.map((artifact, index) => (
+              <ThinkingArtifactCard
+                key={`thinking-artifact-${index}-${artifact.id}`}
+                artifact={artifact}
+                spec={spec}
+                onGenerateServiceBlueprint={onGenerateServiceBlueprint}
+                onGenerateBuildPlan={onGenerateBuildPlan}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex min-h-[460px] items-center justify-center rounded-lg border border-dashed border-white/15 bg-white/[0.025] p-8 text-center">
+            <div className="max-w-lg">
+              <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">No canvases yet</p>
+              <h3 className="mt-3 text-2xl font-semibold tracking-normal text-white">Co-think with Brainpress to generate the right artifacts for this Service.</h3>
+              <p className="mt-3 text-sm leading-6 text-slate-400">
+                If the idea is unclear, Brainpress will start with clarifying questions. If the idea is specific, it will create only the canvases needed for the service.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function ThinkingArtifactCard({
+  artifact,
+  spec,
+  onGenerateServiceBlueprint,
+  onGenerateBuildPlan,
+}: {
+  artifact: ServiceThinkingArtifact;
+  spec?: BrainpressSpec;
   onGenerateServiceBlueprint: () => void;
   onGenerateBuildPlan: (spec: BrainpressSpec) => void;
 }) {
-  const serviceCapabilities = selectedSession?.featureIdeas.length ? selectedSession.featureIdeas : ["Service capabilities will appear as the spec becomes clearer."];
-  const workflow = service.serviceWorkflow.length
-    ? service.serviceWorkflow
-    : selectedSession?.mvpScope.length
-      ? selectedSession.mvpScope
-      : ["Capture the request.", "Clarify the outcome.", "Route build work only after founder approval.", "Verify before marking work ready."];
-  const risks = uniqueText([
-    ...(selectedSession?.risks || []),
-    ...(spec?.assumptions.map((assumption) => `Assumption: ${assumption}`) || []),
-    ...(service.openQuestions || []),
-  ]);
-  const constraints = uniqueText([
-    ...(spec?.nonGoals.map((item) => `Not now: ${item}`) || []),
-    ...(selectedSession?.decisions || []),
-  ]);
-  const firstRecommendation = selectedSession?.recommendedBuildTasks[0];
-
   return (
-    <>
-      <main className="relative min-h-[760px] overflow-hidden border-b border-white/10 bg-[#05070d] p-4 md:p-5 lg:border-b-0 lg:border-r">
-        <CanvasBackdrop />
-        <div className="relative z-10 space-y-4">
-          <ServiceSpecCard service={service} session={selectedSession} spec={spec} clarifyingQuestions={clarifyingQuestions} />
-          <ServiceWorkflowCard workflow={workflow} capabilities={serviceCapabilities} approvalPoints={service.humanApprovalPoints} />
-          <RisksUnknownsCard risks={risks} constraints={constraints} openQuestions={spec?.openQuestions || service.openQuestions} />
-        </div>
-      </main>
-
-      <aside className="relative min-h-[760px] overflow-hidden bg-[#060914] p-4 md:p-5">
-        <CanvasBackdrop />
-        <div className="relative z-10 space-y-4">
-          <AgentBlueprintCard service={service} agents={agents} />
-          <ApprovalPointsCard approvalPoints={service.humanApprovalPoints} successMetrics={service.successMetrics} />
-          <BuildReadinessNode
-            spec={spec}
-            questionCount={clarifyingQuestions.filter((question) => question.status !== "answered").length}
-            onGenerateServiceBlueprint={onGenerateServiceBlueprint}
-            onGenerateBuildPlan={onGenerateBuildPlan}
-          />
-          <BuildNextNode session={selectedSession} recommendation={firstRecommendation} onCreateBuildTask={onCreateBuildTask} />
-        </div>
-      </aside>
-    </>
-  );
-}
-
-function ServiceSpecCard({
-  service,
-  session,
-  spec,
-  clarifyingQuestions,
-}: {
-  service: BrainpressService;
-  session?: ThinkSession;
-  spec?: BrainpressSpec;
-  clarifyingQuestions: ClarifyingQuestion[];
-}) {
-  const openQuestionCount = spec ? Math.max(spec.openQuestions.length, clarifyingQuestions.filter((question) => question.status !== "answered").length) : 0;
-  const status = spec ? (spec.clarificationStatus === "needs_clarification" ? "needs clarification" : "ready") : "draft";
-  return (
-    <ThinkPanel accent="violet">
+    <ThinkPanel accent={artifactTone(artifact.type)}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-violet-200">Center Column</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-normal text-white">Service Spec</h2>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400">{formatCanvasType(artifact.type)}</p>
+          <h3 className="mt-2 text-xl font-semibold tracking-normal text-white">{artifact.title}</h3>
         </div>
-        <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", status === "ready" ? "bg-emerald-300/15 text-emerald-200" : status === "draft" ? "bg-white/10 text-slate-300" : "bg-amber-300/15 text-amber-200")}>
-          {status}
+        <span className={cx("rounded-md px-2 py-1 font-mono text-[10px] uppercase", statusTone(artifact.status))}>
+          {artifact.status.replaceAll("_", " ")}
         </span>
       </div>
-      <div className="mt-5 grid gap-3">
-        <SpecField label="Service Promise" value={service.servicePromise || session?.productDirection || "No service promise generated yet."} />
-        <SpecField label="Target Customer" value={service.targetCustomer || session?.targetUser || "Target customer is not clear yet."} />
-        <SpecField label="Desired Outcome" value={service.desiredOutcome || session?.proposedSolution || "Desired outcome will appear after Brainpress understands the Service."} />
-        <SpecField label="What" value={spec?.what || session?.summary || "The Service Spec will define what the agent service must accomplish."} />
-        <SpecField label="Why" value={spec?.why || session?.userProblem || "The Service Spec will capture why this should exist."} />
-      </div>
-      <div className="mt-4 rounded-lg border border-violet-300/15 bg-violet-300/[0.06] p-3">
-        <p className="font-mono text-[11px] uppercase tracking-wide text-violet-100">{openQuestionCount} open questions</p>
-        <p className="mt-1 text-xs leading-5 text-slate-400">Answer open questions before turning this into a build plan.</p>
-      </div>
-    </ThinkPanel>
-  );
-}
-
-function ServiceWorkflowCard({
-  workflow,
-  capabilities,
-  approvalPoints,
-}: {
-  workflow: string[];
-  capabilities: string[];
-  approvalPoints: string[];
-}) {
-  return (
-    <ThinkPanel accent="blue">
-      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">Service Workflow</p>
-      <h3 className="mt-2 text-xl font-semibold text-white">How the Service should work</h3>
-      <CompactList label="workflow" items={workflow} />
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <MiniSummary title="Service Capabilities" items={capabilities} />
-        <MiniSummary title="Approval Points" items={approvalPoints} />
-      </div>
-    </ThinkPanel>
-  );
-}
-
-function RisksUnknownsCard({
-  risks,
-  constraints,
-  openQuestions,
-}: {
-  risks: string[];
-  constraints: string[];
-  openQuestions: string[];
-}) {
-  return (
-    <ThinkPanel accent="amber">
-      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-200">Risks & Unknowns</p>
-      <h3 className="mt-2 text-xl font-semibold text-white">What still needs judgment</h3>
-      <div className="mt-4 grid gap-3 md:grid-cols-3">
-        <MiniSummary title="Unresolved Risks" items={risks} emptyText="No major risks captured yet." />
-        <MiniSummary title="Constraints" items={constraints} emptyText="No explicit constraints yet." />
-        <MiniSummary title="Open Questions" items={openQuestions} emptyText="No open questions yet." />
+      <p className="mt-3 text-sm leading-6 text-slate-300">{artifact.purpose}</p>
+      <CompactList label={`thinking-artifact-${artifact.id}`} items={artifact.content} emptyText="Brainpress has not added content yet." />
+      {artifact.type === "agent_team" ? (
+        <Button className="mt-4" variant="primary" onClick={onGenerateServiceBlueprint}>
+          Generate Service Blueprint
+        </Button>
+      ) : null}
+      {artifact.status === "ready_for_build" && spec ? (
+        <Button className="mt-4" variant="primary" onClick={() => onGenerateBuildPlan(spec)}>
+          Generate Build Plan
+        </Button>
+      ) : null}
+      {artifact.type === "ui_ux_brief" ? (
+        <p className="mt-4 rounded-md border border-violet-300/15 bg-violet-300/[0.06] p-3 text-xs leading-5 text-violet-100">
+          Run the Design Agent in ServiceWindow when you are ready for premium UI/UX screens.
+        </p>
+      ) : null}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3 text-xs text-slate-500">
+        <span>Confidence {Math.round(artifact.confidence * 100)}%</span>
+        <span>{formatDateTime(artifact.updatedAt)}</span>
       </div>
     </ThinkPanel>
   );
@@ -536,147 +494,6 @@ function CanvasBackdrop() {
         backgroundSize: "36px 36px, 36px 36px, 100% 100%",
       }}
     />
-  );
-}
-
-function AgentBlueprintCard({
-  service,
-  agents,
-}: {
-  service: BrainpressService;
-  agents: ServiceAgent[];
-}) {
-  const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
-  const subAgents = agents.filter((agent) => agent.id !== mainAgent?.id);
-  return (
-    <ThinkPanel accent="emerald">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-200">Agent Blueprint</p>
-          <h3 className="mt-2 text-xl font-semibold text-white">Agent Team</h3>
-        </div>
-        <span className="rounded-md bg-emerald-300/10 px-2 py-1 font-mono text-[10px] uppercase text-emerald-100">
-          {agents.length || 0} agents
-        </span>
-      </div>
-      {mainAgent ? (
-        <div className="mt-4 rounded-lg border border-emerald-300/15 bg-emerald-300/[0.06] p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-semibold text-white">{mainAgent.name}</p>
-            <PermissionBadge level={mainAgent.permissionLevel} />
-          </div>
-          <p className="mt-1 text-xs uppercase tracking-wide text-emerald-100">Main Agent</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{shortText(mainAgent.goal, 140)}</p>
-        </div>
-      ) : (
-        <p className="mt-4 rounded-lg border border-white/10 bg-white/[0.035] p-3 text-sm text-slate-400">
-          No main agent generated yet. Generate the Service Blueprint to propose the agent team.
-        </p>
-      )}
-      <div className="mt-4 space-y-2">
-        {subAgents.length ? (
-          subAgents.slice(0, 4).map((agent, index) => (
-            <div key={`agent-blueprint-${index}-${agent.id}`} className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-white">{agent.name}</p>
-                <PermissionBadge level={agent.permissionLevel} />
-              </div>
-              <p className="mt-1 text-xs text-slate-500">{agent.role}</p>
-            </div>
-          ))
-        ) : (
-          <p className="text-sm leading-6 text-slate-400">Sub-agents will appear when the Service needs specialized roles.</p>
-        )}
-      </div>
-    </ThinkPanel>
-  );
-}
-
-function ApprovalPointsCard({
-  approvalPoints,
-  successMetrics,
-}: {
-  approvalPoints: string[];
-  successMetrics: string[];
-}) {
-  return (
-    <ThinkPanel accent="blue">
-      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-blue-300">Approval Points</p>
-      <h3 className="mt-2 text-xl font-semibold text-white">Human gates</h3>
-      <CompactList label="approval-points" items={approvalPoints} emptyText="Approval points will appear with the Service Blueprint." />
-      <MiniSummary title="Success Metrics" items={successMetrics} emptyText="No success metrics generated yet." />
-    </ThinkPanel>
-  );
-}
-
-function BuildReadinessNode({
-  spec,
-  questionCount,
-  onGenerateServiceBlueprint,
-  onGenerateBuildPlan,
-}: {
-  spec?: BrainpressSpec;
-  questionCount: number;
-  onGenerateServiceBlueprint: () => void;
-  onGenerateBuildPlan: (spec: BrainpressSpec) => void;
-}) {
-  const ready = Boolean(spec && spec.clarificationStatus !== "needs_clarification" && questionCount === 0);
-  return (
-    <ThinkPanel accent={ready ? "emerald" : "amber"}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className={cx("font-mono text-[11px] font-semibold uppercase tracking-wide", ready ? "text-emerald-200" : "text-amber-200")}>
-            Build Readiness
-          </p>
-          <h3 className="mt-2 text-xl font-semibold text-white">{ready ? "Ready for Build" : "Needs clarification"}</h3>
-        </div>
-        {ready ? <CheckCircle2 className="h-5 w-5 text-emerald-200" /> : <Sparkles className="h-5 w-5 text-amber-200" />}
-      </div>
-      <p className="mt-3 text-sm leading-6 text-slate-300">
-        {ready
-          ? "The Service Spec is clear enough to generate the technical plan and ordered Codex tasks."
-          : "Generate or refine the Service Blueprint before handing work to Build."}
-      </p>
-      <div className="mt-4">
-        {ready && spec ? (
-          <Button variant="primary" onClick={() => onGenerateBuildPlan(spec)}>
-            Generate Build Plan
-          </Button>
-        ) : (
-          <Button variant="primary" onClick={onGenerateServiceBlueprint}>
-            Generate Service Blueprint
-          </Button>
-        )}
-      </div>
-    </ThinkPanel>
-  );
-}
-
-function BuildNextNode({
-  session,
-  recommendation,
-  onCreateBuildTask,
-  className,
-}: {
-  session?: ThinkSession;
-  recommendation?: RecommendedBuildTask;
-  onCreateBuildTask: (session: ThinkSession, recommendation: RecommendedBuildTask) => void;
-  className?: string;
-}) {
-  return (
-    <div className={cx("rounded-lg border border-emerald-300/20 bg-emerald-300/[0.07] p-4 text-white shadow-2xl shadow-emerald-950/10", className)}>
-      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-200">Next Build Step</p>
-      <h3 className="mt-2 text-lg font-semibold">{recommendation?.title || "No Build step selected yet"}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-300">
-        {recommendation?.reason || "Brainpress will suggest the next agent-ready task after it understands the direction."}
-      </p>
-      {session && recommendation ? (
-        <Button className="mt-4" variant="primary" onClick={() => onCreateBuildTask(session, recommendation)}>
-          <Plus className="h-4 w-4" />
-          Create Build Task
-        </Button>
-      ) : null}
-    </div>
   );
 }
 
@@ -824,7 +641,7 @@ function assistantResponseFromThinkResult(result: { session: ThinkSession; produ
   const taskCount = result.session.recommendedBuildTasks.length;
   const pieces = [
     `I shaped this into a service direction: ${result.session.summary}`,
-    `I also updated the canvas with Service Spec, Service Workflow, Risks, Agent Blueprint, and Build Readiness.`,
+    `I also updated the Dynamic Canvas with the artifacts this idea needs right now.`,
     taskCount
       ? `I found ${taskCount} possible Next Build ${taskCount === 1 ? "step" : "steps"}. You can create ${taskCount === 1 ? "it" : "them"} from the canvas.`
       : "I did not find a Build task yet. Add more detail and I will turn it into agent-ready work.",
@@ -864,6 +681,54 @@ function uniqueText(items: string[]) {
       seen.add(key);
       return true;
     });
+}
+
+function artifactTone(type: ServiceThinkingArtifact["type"]): "blue" | "violet" | "emerald" | "amber" {
+  if (type === "clarifying_questions" || type === "risk_map" || type === "technical_unknowns") return "amber";
+  if (type === "agent_team" || type === "approval_policy") return "emerald";
+  if (type === "ui_ux_brief" || type === "service_brief") return "violet";
+  return "blue";
+}
+
+function statusTone(status: ServiceThinkingArtifact["status"]) {
+  const tones: Record<ServiceThinkingArtifact["status"], string> = {
+    draft: "bg-white/10 text-slate-300",
+    active: "bg-blue-300/15 text-blue-100",
+    needs_review: "bg-amber-300/15 text-amber-100",
+    ready_for_build: "bg-emerald-300/15 text-emerald-100",
+    archived: "bg-slate-500/15 text-slate-400",
+  };
+  return tones[status];
+}
+
+function formatCanvasType(type: ServiceThinkingArtifact["type"]) {
+  const labels: Record<ServiceThinkingArtifact["type"], string> = {
+    clarifying_questions: "Clarifying questions",
+    service_brief: "Service brief",
+    feature_map: "Feature map",
+    roadmap: "Build path",
+    workflow: "Workflow",
+    agent_team: "Agent team",
+    approval_policy: "Approval policy",
+    risk_map: "Risk map",
+    user_journey: "User journey",
+    data_sources: "Data sources",
+    pricing_model: "Pricing model",
+    mvp_scope: "MVP scope",
+    technical_unknowns: "Technical unknowns",
+    ui_ux_brief: "UI/UX brief",
+    custom: "Custom",
+  };
+  return labels[type];
+}
+
+function formatDateTime(value: string) {
+  if (!value) return "Just now";
+  try {
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  } catch {
+    return "Updated";
+  }
 }
 
 function formatThinkMode(mode: ThinkMode) {

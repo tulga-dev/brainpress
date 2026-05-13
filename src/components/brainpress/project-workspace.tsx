@@ -28,6 +28,7 @@ import {
   createSpecFromThinkSession,
   createTaskListFromPlan,
 } from "@/lib/spec-loop";
+import { generateThinkingArtifacts } from "@/lib/think-canvases";
 import { createDevelopmentTaskFromThinkRecommendation, createThinkSession } from "@/lib/think-sessions";
 import { applyProductWindowSuggestion, ThinkOperatingTab, type ThinkCreationResult } from "@/components/brainpress/think-workspace";
 import {
@@ -176,6 +177,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     () => (state.specs || []).filter((spec) => spec.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [projectId, state.specs],
   );
+  const thinkingArtifacts = useMemo(
+    () => (state.thinkingArtifacts || []).filter((artifact) => artifact.serviceId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [projectId, state.thinkingArtifacts],
+  );
   const clarifyingQuestions = useMemo(() => {
     const specIds = new Set(specs.map((spec) => spec.id));
     return (state.clarifyingQuestions || []).filter((question) => specIds.has(question.specId));
@@ -316,6 +321,17 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           : [createConstitution(activeProject), ...(current.constitutions || [])],
         specs: [spec, ...(current.specs || [])],
         clarifyingQuestions: [...questions, ...(current.clarifyingQuestions || [])],
+        thinkingArtifacts: generateThinkingArtifacts({
+          service: activeService,
+          agents: serviceAgents,
+          input,
+          sessions: [session, ...(current.thinkSessions || []).filter((item) => item.projectId === activeProject.id)],
+          specs: [spec, ...(current.specs || []).filter((item) => item.projectId === activeProject.id)],
+          plans,
+          memory: activeMemory,
+          existingArtifacts: current.thinkingArtifacts || [],
+          sourceMessageIds: [session.id],
+        }),
       }));
       setSelectedThinkSessionId(session.id);
       setThinkDirectionInput("");
@@ -330,6 +346,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         project: activeProject,
         memory: activeMemory,
         sources: projectImports,
+        thinkingArtifacts,
         task,
       }),
       codexGoalUpdatedAt: new Date().toISOString(),
@@ -504,11 +521,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       const task: DevelopmentTask = {
         ...taskDraft,
         codexGoal: generateCodexGoalText({
-          project: activeProject,
-          memory: activeMemory,
-          sources: projectImports,
-          task: taskDraft,
-        }),
+        project: activeProject,
+        memory: activeMemory,
+        sources: projectImports,
+        thinkingArtifacts,
+        task: taskDraft,
+      }),
         codexGoalUpdatedAt: new Date().toISOString(),
       };
 
@@ -552,6 +570,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       serviceId: activeService.id,
       sourceSpecId: sourceSpec?.id,
     };
+    task.codexGoal = generateCodexGoalText({
+      project: activeProject,
+      memory: activeMemory,
+      sources: projectImports,
+      thinkingArtifacts,
+      task,
+    });
+    task.codexGoalUpdatedAt = new Date().toISOString();
     setState((current) => ({
       ...current,
       developmentTasks: [task, ...(current.developmentTasks || [])],
@@ -618,6 +644,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       serviceId: activeService.id,
       sourceSpecId: sourceSpec?.id,
     };
+    task.codexGoal = generateCodexGoalText({
+      project: activeProject,
+      memory: activeMemory,
+      sources: projectImports,
+      thinkingArtifacts,
+      task,
+    });
+    task.codexGoalUpdatedAt = new Date().toISOString();
     const now = new Date().toISOString();
     setState((current) => ({
       ...current,
@@ -647,7 +681,18 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       memory: activeMemory,
       spec,
       plan,
-    }).map((task) => ({ ...task, serviceId: activeService.id }));
+    }).map((task) => ({
+      ...task,
+      serviceId: activeService.id,
+      codexGoal: generateCodexGoalText({
+        project: activeProject,
+        memory: activeMemory,
+        sources: projectImports,
+        thinkingArtifacts,
+        task,
+      }),
+      codexGoalUpdatedAt: new Date().toISOString(),
+    }));
     setState((current) => ({
       ...current,
       plans: [plan, ...(current.plans || [])],
@@ -676,6 +721,22 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       ],
     }));
     setActiveTab("Agent Team");
+  }
+
+  function generateThinkCanvasesForWorkspace() {
+    setState((current) => ({
+      ...current,
+      thinkingArtifacts: generateThinkingArtifacts({
+        service: activeService,
+        agents: serviceAgents,
+        input: thinkDirectionInput,
+        sessions: (current.thinkSessions || []).filter((session) => session.projectId === activeProject.id),
+        specs: (current.specs || []).filter((spec) => spec.projectId === activeProject.id),
+        plans: (current.plans || []).filter((plan) => plan.projectId === activeProject.id),
+        memory: activeMemory,
+        existingArtifacts: current.thinkingArtifacts || [],
+      }),
+    }));
   }
 
   function generateServiceUi() {
@@ -722,6 +783,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       plan: latestPlan,
       taskLists,
       developmentTasks,
+      thinkingArtifacts,
       memory: activeMemory,
     }));
     setServiceWindowCopied(true);
@@ -1104,6 +1166,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             sessions={thinkSessions}
             productWindows={productWindows}
             specs={specs}
+            thinkingArtifacts={thinkingArtifacts}
             clarifyingQuestions={clarifyingQuestions}
             selectedSessionId={selectedThinkSessionId}
             mode={thinkMode}
@@ -1113,11 +1176,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             onArtifactTypeChange={setThinkArtifactType}
             onSelectSession={setSelectedThinkSessionId}
             onCreateProductDirection={createProductDirection}
-            onCreateBuildTask={createBuildTaskFromThinkSession}
-            onRegenerateProductWindow={regenerateProductWindow}
-            onApproveProductWindow={approveProductWindow}
-            onCreateProductWindowBuildTask={createBuildTaskFromProductWindow}
             onGenerateServiceBlueprint={generateServiceBlueprintForWorkspace}
+            onGenerateThinkCanvases={generateThinkCanvasesForWorkspace}
             onGenerateBuildPlan={createPlanAndTasksFromSpec}
             thinkingWithAgent={thinkingWithAgent}
           />
@@ -1665,13 +1725,13 @@ function ServiceOverviewTab({
   const mainAgent = agents.find((agent) => agent.id === service.mainAgentId) || agents[0];
   const subAgentCount = Math.max(agents.length - (mainAgent ? 1 : 0), 0);
   const hasBlueprint = Boolean(service.serviceWorkflow.length && service.successMetrics.length && agents.length > 1);
-  const hasServiceWindow = serviceWindow?.status === "generated" && serviceWindow.screens.length > 0;
+  const hasServiceWindow = Boolean(serviceWindow && serviceWindow.status !== "empty" && serviceWindow.screens.length > 0);
   const nextAction = !hasBlueprint
     ? "Generate the Service Blueprint so Brainpress can define the promise, agent team, workflow, approvals, and success metrics."
     : openQuestionsCount
       ? `Answer ${openQuestionsCount} open question${openQuestionsCount === 1 ? "" : "s"} before deeper Build work.`
       : !hasServiceWindow
-        ? "Generate UI/UX so ServiceWindow shows what users will actually interact with."
+        ? "Run the Design Agent so ServiceWindow shows a premium UX/UI system for the agent service."
         : latestSpec
           ? "Export a Codex Build Prompt or generate ordered Build tasks from the Service Spec."
           : "Start in Think to refine the Service Spec and next Build direction.";
@@ -1689,7 +1749,7 @@ function ServiceOverviewTab({
             <ServiceMetric title="Desired Outcome" value={service.desiredOutcome} />
             <ServiceMetric title="Main Agent" value={mainAgent?.name || "Main agent not configured yet"} />
             <ServiceMetric title="Sub-agents" value={`${subAgentCount} supporting agent${subAgentCount === 1 ? "" : "s"}`} />
-            <ServiceMetric title="ServiceWindow" value={hasServiceWindow ? "generated" : "empty"} />
+            <ServiceMetric title="ServiceWindow" value={hasServiceWindow ? "design generated" : "empty"} />
           </div>
           <div className="mt-5 flex flex-wrap gap-2">
             <Button variant="primary" onClick={onGenerateServiceBlueprint}>
@@ -1698,7 +1758,7 @@ function ServiceOverviewTab({
             </Button>
             <Button onClick={onGenerateServiceWindow}>
               <Sparkles className="h-4 w-4" />
-              Generate UI/UX
+              Run Design Agent
             </Button>
             <Button onClick={onCopyCodexPrompt} disabled={!hasServiceWindow}>
               <Clipboard className="h-4 w-4" />
@@ -1773,22 +1833,23 @@ function ServiceWindowTab({
   onCopyCodexPrompt: () => void;
   copied: boolean;
 }) {
-  const isGenerated = serviceWindow?.status === "generated" && serviceWindow.screens.length > 0;
+  const isGenerated = Boolean(serviceWindow && serviceWindow.status !== "empty" && serviceWindow.screens.length > 0);
+  const designedWindow = isGenerated ? serviceWindow : undefined;
   return (
     <section className="overflow-hidden rounded-lg border border-slate-800 bg-[#05070d] text-white shadow-2xl">
       <div className="border-b border-white/10 bg-white/[0.035] p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">ServiceWindow</p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-normal">Generated UI/UX for the agent service.</h2>
+            <h2 className="mt-2 text-3xl font-semibold tracking-normal">Design Agent output for the agent service.</h2>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-              ServiceWindow shows the front office customers or founders use to interact with this agent-based Service.
+              ServiceWindow shows the premium UX/UI system customers or founders use to interact with this agent-based Service.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button onClick={onGenerate}>
               <Sparkles className="h-4 w-4" />
-              Generate UI/UX
+              Run Design Agent
             </Button>
             <Button variant="primary" onClick={onCopyCodexPrompt} disabled={!isGenerated}>
               <Clipboard className="h-4 w-4" />
@@ -1801,19 +1862,74 @@ function ServiceWindowTab({
       {!isGenerated ? (
         <div className="p-8">
           <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-8 text-center">
-            <p className="text-xl font-semibold text-white">No service UI generated yet.</p>
+            <p className="text-xl font-semibold text-white">No premium service UI designed yet.</p>
             <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-400">
-              Generate the first interface for this agent service based on the current Service Spec, Agent Team, and Build Plan.
+              Run the Design Agent to create a premium UX/UI system for this agent service.
             </p>
             <Button className="mt-5" variant="primary" onClick={onGenerate}>
               <Sparkles className="h-4 w-4" />
-              Generate UI/UX
+              Run Design Agent
             </Button>
           </div>
         </div>
-      ) : (
-        <div className="grid gap-5 p-5 xl:grid-cols-[1.1fr_0.9fr]">
-          <div className="overflow-hidden rounded-lg border border-cyan-300/20 bg-[#101827] shadow-2xl shadow-cyan-950/20">
+      ) : designedWindow ? (
+        <div className="grid gap-5 p-5 xl:grid-cols-[1.05fr_0.95fr]">
+          <div className="space-y-5">
+            <DesignStrategyPanel serviceWindow={designedWindow} />
+            <PremiumUiStructure service={service} serviceWindow={designedWindow} />
+            <ScreenMapPanel serviceWindow={designedWindow} />
+          </div>
+
+          <div className="space-y-5">
+            <SummaryList title="Primary Flow" items={designedWindow.primaryFlow} />
+            <SummaryList title="Agent Interaction Points" items={designedWindow.agentInteractionPoints} />
+            <SummaryList title="Approval Moments" items={designedWindow.humanApprovalPoints} />
+            <VisualSystemPanel serviceWindow={designedWindow} />
+            <ComponentSystemPanel serviceWindow={designedWindow} />
+            <SummaryList title="Responsive Behavior" items={designedWindow.responsiveBehavior || []} />
+            <SummaryList title="Accessibility Notes" items={designedWindow.accessibilityNotes || []} />
+            <SummaryList title="Implementation Notes" items={designedWindow.implementationNotes || []} />
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DesignStrategyPanel({ serviceWindow }: { serviceWindow: ServiceWindow }) {
+  const strategy = serviceWindow.uxStrategy;
+  const architecture = serviceWindow.informationArchitecture;
+  return (
+    <div className="rounded-lg border border-blue-300/20 bg-blue-300/[0.06] p-5 shadow-2xl shadow-blue-950/20">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-200">
+            {serviceWindow.designAgentName || "Brainpress Design Agent"}
+          </p>
+          <h3 className="mt-2 text-2xl font-semibold text-white">UX Strategy</h3>
+        </div>
+        <TaskChip>{serviceWindow.status.replaceAll("_", " ")}</TaskChip>
+      </div>
+      {serviceWindow.designBrief ? <p className="mt-3 text-sm leading-6 text-slate-300">{serviceWindow.designBrief}</p> : null}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <ServiceMetric title="Target user" value={strategy?.targetUser || "Not defined"} />
+        <ServiceMetric title="Job to be done" value={strategy?.jobToBeDone || "Not defined"} />
+        <ServiceMetric title="Trust concern" value={strategy?.trustConcern || "Not defined"} />
+        <ServiceMetric title="Success moment" value={strategy?.successMoment || "Not defined"} />
+      </div>
+      {architecture ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <SummaryList title="Information Architecture" items={architecture.mainNavigation} />
+          <SummaryList title="Service States" items={architecture.serviceStates} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PremiumUiStructure({ service, serviceWindow }: { service: BrainpressService; serviceWindow: ServiceWindow }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-cyan-300/20 bg-[#101827] shadow-2xl shadow-cyan-950/20">
             <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.04] px-4 py-3">
               <div className="flex items-center gap-3">
                 <div className="flex gap-1.5">
@@ -1823,33 +1939,92 @@ function ServiceWindowTab({
                 </div>
                 <span className="font-mono text-xs text-slate-400">/{service.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}</span>
               </div>
-              <TaskChip>Service UI</TaskChip>
+              <TaskChip>Premium Service UI</TaskChip>
             </div>
             <div className="bg-[#f8fafc] p-5 text-slate-950">
               <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">{service.targetCustomer}</p>
               <h3 className="mt-3 text-3xl font-semibold tracking-normal">{service.name}</h3>
               <p className="mt-3 text-sm leading-6 text-slate-600">{service.servicePromise}</p>
-              <div className="mt-6 grid gap-3 md:grid-cols-3">
+              <div className="mt-6 grid gap-3 md:grid-cols-2">
                 {serviceWindow.screens.map((screen, index) => (
                   <div key={`service-window-screen-${index}-${screen.id}`} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="mb-3 h-1.5 w-12 rounded-full bg-blue-600" />
                     <p className="font-semibold">{screen.name}</p>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">{screen.purpose}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{screen.userGoal || screen.purpose}</p>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {(screen.components?.length ? screen.components : screen.keyComponents).slice(0, 3).map((component, componentIndex) => (
+                        <span key={`screen-component-${screen.id}-${componentIndex}-${component}`} className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600">
+                          {component}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-          </div>
+    </div>
+  );
+}
 
-          <div className="grid gap-4">
-            <SummaryList title="Primary Flow" items={serviceWindow.primaryFlow} />
-            <SummaryList title="Agent Interaction Points" items={serviceWindow.agentInteractionPoints} />
-            <SummaryList title="Human Approval Points" items={serviceWindow.humanApprovalPoints} />
-            <SummaryList title="Agent Team" items={agents.map((agent) => `${agent.name}: ${agent.role}`)} />
+function ScreenMapPanel({ serviceWindow }: { serviceWindow: ServiceWindow }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.045] p-5">
+      <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Screen Map</p>
+      <div className="mt-4 space-y-3">
+        {serviceWindow.screens.map((screen, index) => (
+          <div key={`design-screen-map-${index}-${screen.id}`} className="rounded-lg border border-white/10 bg-slate-950/70 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-lg font-semibold text-white">{screen.name}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-400">{screen.purpose}</p>
+              </div>
+              <TaskChip>{screen.approvalPoints.length ? "Approval aware" : "No approval"}</TaskChip>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <SummaryList title="User Inputs" items={screen.userInputs} />
+              <SummaryList title="Agent Outputs" items={screen.serviceOutputs} />
+              <SummaryList title="Evidence" items={screen.evidenceDisplay || []} />
+            </div>
           </div>
-        </div>
-      )}
-    </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VisualSystemPanel({ serviceWindow }: { serviceWindow: ServiceWindow }) {
+  const visual = serviceWindow.visualSystem;
+  if (!visual) return <SummaryList title="Visual System" items={[]} />;
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.045] p-5">
+      <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Visual System</p>
+      <div className="mt-4 grid gap-3">
+        <ServiceMetric title="Product feel" value={visual.productFeel} />
+        <ServiceMetric title="Typography" value={visual.typographyDirection} />
+        <ServiceMetric title="Spacing / density" value={visual.spacingDensity} />
+        <ServiceMetric title="Cards" value={visual.cardStyle} />
+        <ServiceMetric title="Tables / lists" value={visual.tableListStyle} />
+        <SummaryList title="Premium Polish" items={visual.premiumPolishNotes} />
+      </div>
+    </div>
+  );
+}
+
+function ComponentSystemPanel({ serviceWindow }: { serviceWindow: ServiceWindow }) {
+  const components = serviceWindow.componentSystem || [];
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.045] p-5">
+      <p className="font-mono text-xs font-semibold uppercase tracking-wide text-blue-300">Component System</p>
+      <div className="mt-4 space-y-3">
+        {components.length ? components.slice(0, 8).map((component, index) => (
+          <div key={`component-system-${index}-${component.name}`} className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+            <p className="font-semibold text-white">{component.name}</p>
+            <p className="mt-1 text-sm leading-6 text-slate-400">{component.purpose}</p>
+            <p className="mt-2 text-xs text-slate-500">States: {component.states.join(", ")}</p>
+          </div>
+        )) : <p className="text-sm leading-6 text-slate-400">Run the Design Agent to generate reusable service UI components.</p>}
+      </div>
+    </div>
   );
 }
 

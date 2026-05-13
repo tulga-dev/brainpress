@@ -93,7 +93,24 @@ export type SpecTaskStatus = "draft" | "ready" | "in_progress" | "done";
 export type BrainpressServiceStage = "idea" | "needs_clarification" | "spec_ready" | "build_ready" | "running";
 export type ServiceAgentPermissionLevel = "low" | "medium" | "high" | "founder_approval_required";
 export type ServiceAgentStatus = "proposed" | "active" | "needs_setup" | "paused";
-export type ServiceWindowStatus = "empty" | "generated" | "needs_refinement";
+export type ServiceWindowStatus = "empty" | "generated" | "design_generated" | "implementation_ready" | "built" | "needs_refinement";
+export type ThinkCanvasType =
+  | "clarifying_questions"
+  | "service_brief"
+  | "feature_map"
+  | "roadmap"
+  | "workflow"
+  | "agent_team"
+  | "approval_policy"
+  | "risk_map"
+  | "user_journey"
+  | "data_sources"
+  | "pricing_model"
+  | "mvp_scope"
+  | "technical_unknowns"
+  | "ui_ux_brief"
+  | "custom";
+export type ThinkCanvasStatus = "draft" | "active" | "needs_review" | "ready_for_build" | "archived";
 export type AgentRunStatus =
   | "Draft"
   | "Prepared"
@@ -175,22 +192,93 @@ export interface ServiceWindowScreen {
   id: string;
   name: string;
   purpose: string;
+  userGoal?: string;
   keyComponents: string[];
+  components?: string[];
   userInputs: string[];
   serviceOutputs: string[];
   agentInteractions: string[];
+  subAgentOutputs?: string[];
   approvalPoints: string[];
+  approvalActions?: string[];
+  evidenceDisplay?: string[];
+  emptyState?: string;
+  loadingState?: string;
+  errorState?: string;
+  successState?: string;
+}
+
+export interface ServiceWindowUxStrategy {
+  targetUser: string;
+  jobToBeDone: string;
+  trustConcern: string;
+  emotionalTone: string;
+  complexityLevel: string;
+  successMoment: string;
+}
+
+export interface ServiceWindowInformationArchitecture {
+  mainNavigation: string[];
+  screenHierarchy: string[];
+  keyObjects: string[];
+  serviceStates: string[];
+}
+
+export interface ServiceWindowVisualSystem {
+  productFeel: string;
+  typographyDirection: string;
+  spacingDensity: string;
+  cardStyle: string;
+  tableListStyle: string;
+  formStyle: string;
+  statusBadgeStyle: string;
+  motionNotes: string;
+  premiumPolishNotes: string[];
+}
+
+export interface ServiceWindowComponentSpec {
+  name: string;
+  purpose: string;
+  usedIn: string[];
+  dataShown: string[];
+  states: string[];
 }
 
 export interface ServiceWindow {
   id: string;
   serviceId: string;
   status: ServiceWindowStatus;
+  designAgentName?: string;
+  designBrief?: string;
+  uxStrategy?: ServiceWindowUxStrategy;
+  informationArchitecture?: ServiceWindowInformationArchitecture;
   screens: ServiceWindowScreen[];
   primaryFlow: string[];
   agentInteractionPoints: string[];
   humanApprovalPoints: string[];
+  visualSystem?: ServiceWindowVisualSystem;
+  componentSystem?: ServiceWindowComponentSpec[];
+  interactionStates?: string[];
+  responsiveBehavior?: string[];
+  accessibilityNotes?: string[];
+  implementationNotes?: string[];
+  codexImplementationPrompt?: string;
   generatedAt?: string;
+  updatedAt: string;
+}
+
+export interface ServiceThinkingArtifact {
+  id: string;
+  serviceId: string;
+  type: ThinkCanvasType;
+  title: string;
+  purpose: string;
+  content: string[];
+  sourceMessageIds: string[];
+  confidence: number;
+  status: ThinkCanvasStatus;
+  createdByAgent: string;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -622,6 +710,7 @@ export interface BrainpressState {
   services: BrainpressService[];
   serviceAgents: ServiceAgent[];
   serviceWindows: ServiceWindow[];
+  thinkingArtifacts: ServiceThinkingArtifact[];
   projects: Project[];
   memories: Record<string, Memory>;
   outcomes: Outcome[];

@@ -158,6 +158,7 @@ export const initialState: BrainpressState = {
   services: [brainpressCoreService, seedService],
   serviceAgents: [...brainpressCoreServiceAgents, ...seedServiceAgents],
   serviceWindows: [createEmptyServiceWindow(brainpressCoreService.id, createdAt), createEmptyServiceWindow(seedService.id, createdAt)],
+  thinkingArtifacts: [],
   projects: [brainpressCoreProject, seedProject],
   memories: {
     [brainpressCoreProject.id]: brainpressCoreMemory,

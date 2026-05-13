@@ -8,6 +8,7 @@ import { normalizeDevelopmentTaskResult } from "@/lib/development-task-results";
 import { createDefaultServiceAgents, createEmptyServiceWindow, createServiceFromProject, normalizeService, normalizeServiceAgent, normalizeServiceWindow } from "@/lib/services";
 import { normalizeProductWindow } from "@/lib/product-window";
 import { normalizeRunIssue } from "@/lib/run-agents";
+import { normalizeThinkingArtifact } from "@/lib/think-canvases";
 import {
   normalizeClarifyingQuestion,
   normalizeConstitution,
@@ -55,6 +56,7 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
   const services = ensureServices(projects, state.services || []);
   const serviceAgents = ensureServiceAgents(services, state.serviceAgents || []);
   const serviceWindows = ensureServiceWindows(services, state.serviceWindows || []);
+  const serviceIds = new Set(services.map((service) => service.id));
   const safetyRulesByProject = new Map(projects.map((project) => [project.id, project.safetyRules]));
   const projectIdByOutcome = new Map(state.outcomes.map((outcome) => [outcome.id, outcome.projectId]));
   const memories = Object.fromEntries(
@@ -70,6 +72,9 @@ function normalizeBrainpressState(state: BrainpressState): BrainpressState {
     services,
     serviceAgents,
     serviceWindows,
+    thinkingArtifacts: (state.thinkingArtifacts || [])
+      .map((artifact) => normalizeThinkingArtifact(artifact, artifact.serviceId))
+      .filter((artifact) => serviceIds.has(artifact.serviceId)),
     projects,
     memories,
     prompts: (state.prompts || []).map((prompt) =>

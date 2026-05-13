@@ -63,15 +63,42 @@ create table if not exists public.service_agents (
 );
 
 create table if not exists public.service_windows (
+    id text primary key,
+    service_id text not null references public.services(id) on delete cascade,
+    owner_id uuid not null references auth.users(id) on delete cascade,
+    status text not null default 'empty',
+    design_agent_name text,
+    design_brief text,
+    ux_strategy jsonb not null default '{}'::jsonb,
+    information_architecture jsonb not null default '{}'::jsonb,
+    screens jsonb not null default '[]'::jsonb,
+    primary_flow jsonb not null default '[]'::jsonb,
+    agent_interaction_points jsonb not null default '[]'::jsonb,
+    human_approval_points jsonb not null default '[]'::jsonb,
+    visual_system jsonb not null default '{}'::jsonb,
+    component_system jsonb not null default '[]'::jsonb,
+    interaction_states jsonb not null default '[]'::jsonb,
+    responsive_behavior jsonb not null default '[]'::jsonb,
+    accessibility_notes jsonb not null default '[]'::jsonb,
+    implementation_notes jsonb not null default '[]'::jsonb,
+    codex_implementation_prompt text,
+    generated_at timestamptz,
+    updated_at timestamptz not null default now()
+  );
+
+create table if not exists public.service_thinking_artifacts (
   id text primary key,
   service_id text not null references public.services(id) on delete cascade,
   owner_id uuid not null references auth.users(id) on delete cascade,
-  status text not null default 'empty',
-  screens jsonb not null default '[]'::jsonb,
-  primary_flow jsonb not null default '[]'::jsonb,
-  agent_interaction_points jsonb not null default '[]'::jsonb,
-  human_approval_points jsonb not null default '[]'::jsonb,
-  generated_at timestamptz,
+  type text not null default 'custom',
+  title text not null default '',
+  purpose text not null default '',
+  content jsonb not null default '[]'::jsonb,
+  source_message_ids jsonb not null default '[]'::jsonb,
+  confidence numeric not null default 0.65,
+  status text not null default 'active',
+  created_by_agent text not null default 'Agent Development Agent',
+  created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
@@ -248,6 +275,17 @@ alter table public.services add column if not exists open_questions jsonb not nu
 alter table public.brainpress_specs add column if not exists service_id text;
 alter table public.brainpress_plans add column if not exists service_id text;
 alter table public.brainpress_task_lists add column if not exists service_id text;
+alter table public.service_windows add column if not exists design_agent_name text;
+alter table public.service_windows add column if not exists design_brief text;
+alter table public.service_windows add column if not exists ux_strategy jsonb not null default '{}'::jsonb;
+alter table public.service_windows add column if not exists information_architecture jsonb not null default '{}'::jsonb;
+alter table public.service_windows add column if not exists visual_system jsonb not null default '{}'::jsonb;
+alter table public.service_windows add column if not exists component_system jsonb not null default '[]'::jsonb;
+alter table public.service_windows add column if not exists interaction_states jsonb not null default '[]'::jsonb;
+alter table public.service_windows add column if not exists responsive_behavior jsonb not null default '[]'::jsonb;
+alter table public.service_windows add column if not exists accessibility_notes jsonb not null default '[]'::jsonb;
+alter table public.service_windows add column if not exists implementation_notes jsonb not null default '[]'::jsonb;
+alter table public.service_windows add column if not exists codex_implementation_prompt text;
 
 create table if not exists public.development_task_results (
   id text primary key,
@@ -310,6 +348,7 @@ alter table public.projects enable row level security;
 alter table public.services enable row level security;
 alter table public.service_agents enable row level security;
 alter table public.service_windows enable row level security;
+alter table public.service_thinking_artifacts enable row level security;
 alter table public.think_sessions enable row level security;
 alter table public.product_windows enable row level security;
 alter table public.brainpress_constitutions enable row level security;
@@ -346,6 +385,14 @@ create policy "Service windows are owned by user" on public.service_windows
   for all to authenticated
   using ((select auth.uid()) = owner_id)
   with check ((select auth.uid()) = owner_id);
+
+create policy "Service thinking artifacts are owned by user" on public.service_thinking_artifacts
+  for all to authenticated
+  using ((select auth.uid()) = owner_id)
+  with check (
+    (select auth.uid()) = owner_id and
+    exists (select 1 from public.services s where s.id = service_id and s.owner_id = (select auth.uid()))
+  );
 
 create policy "Think sessions are owned by user" on public.think_sessions
   for all to authenticated
@@ -444,6 +491,7 @@ create index if not exists projects_owner_id_idx on public.projects(owner_id);
 create index if not exists services_owner_id_idx on public.services(owner_id);
 create index if not exists service_agents_service_id_idx on public.service_agents(service_id);
 create index if not exists service_windows_service_id_idx on public.service_windows(service_id);
+create index if not exists service_thinking_artifacts_service_id_idx on public.service_thinking_artifacts(service_id);
 create index if not exists think_sessions_project_id_idx on public.think_sessions(project_id);
 create index if not exists product_windows_project_id_idx on public.product_windows(project_id);
 create index if not exists brainpress_constitutions_project_id_idx on public.brainpress_constitutions(project_id);
